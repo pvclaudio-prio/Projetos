@@ -80,4 +80,4 @@ def conectar_drive():
 
 # 🔐 Autenticação
 usuario_logado, nome_usuario = login()
-st.sidebar.image("assets/logo.png", use_column_width=True)
+st.sidebar.image("PRIO_SEM_POLVO_PRIO_PANTONE_LOGOTIPO_Azul.png", use_column_width=True)
