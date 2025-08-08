@@ -12,6 +12,7 @@ import tempfile
 from modules.projetos_atividades import aba_projetos_atividades
 from modules.cadastro_ideias import cadastro_ideias
 from modules.cadastro_riscos import cadastro_riscos
+from modules.agenda import agenda_semanal
 
 @st.cache_data
 def carregar_usuarios():
@@ -86,7 +87,7 @@ elif menu == "🗂️ Projetos e Atividades":
     aba_projetos_atividades(usuario_logado, nome_usuario)
 
 elif menu == "📆 Agenda":
-    st.title("📆 Agenda (Em construção)")
+    agenda_semanal()
 
 elif menu == "💡 Ideias":
     cadastro_ideias()
