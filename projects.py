@@ -9,7 +9,7 @@ import uuid
 from modules.drive_utils import conectar_drive
 from modules.crud_utils import carregar_arquivo_excel, salvar_arquivo_excel
 import tempfile
-from pages.projetos_atividades import aba_projetos_atividades
+from modules.projetos_atividades import aba_projetos_atividades
 
 @st.cache_data
 def carregar_usuarios():
