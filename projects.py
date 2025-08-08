@@ -5,6 +5,8 @@ from pydrive.drive import GoogleDrive
 from oauth2client.client import OAuth2Credentials
 import httplib2
 
+st.sidebar.image("PRIO_SEM_POLVO_PRIO_PANTONE_LOGOTIPO_Azul.png", use_column_width=True)
+
 @st.cache_data
 def carregar_usuarios():
     usuarios_config = st.secrets.get("users", {})
@@ -80,4 +82,4 @@ def conectar_drive():
 
 # 🔐 Autenticação
 usuario_logado, nome_usuario = login()
-st.sidebar.image("PRIO_SEM_POLVO_PRIO_PANTONE_LOGOTIPO_Azul.png", use_column_width=True)
+
