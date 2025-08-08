@@ -4,6 +4,12 @@ from pydrive.auth import GoogleAuth
 from pydrive.drive import GoogleDrive
 from oauth2client.client import OAuth2Credentials
 import httplib2
+import pandas as pd
+import uuid
+from modules.drive_utils import conectar_drive
+from modules.crud_utils import carregar_arquivo_excel, salvar_arquivo_excel
+import tempfile
+from pages.projetos_atividades import aba_projetos_atividades
 
 @st.cache_data
 def carregar_usuarios():
@@ -79,6 +85,49 @@ def conectar_drive():
     drive = GoogleDrive(gauth)
     return drive
 
-# 🔐 Autenticação
+# 🔐 Login
 usuario_logado, nome_usuario = login()
 
+# 🎨 Sidebar
+st.sidebar.image("assets/logo.png", use_column_width=True)
+st.sidebar.markdown(f"👤 Logado como: **{nome_usuario}**")
+
+menu = st.sidebar.radio("📋 Navegação", [
+    "🏠 Dashboard",
+    "🗂️ Projetos e Atividades",
+    "📆 Agenda",
+    "💡 Ideias",
+    "⚠️ Riscos",
+    "💰 Ganhos",
+    "📚 Lições Aprendidas",
+    "🔎 Visualização Unificada",
+    "🤖 IA Consultor"
+])
+
+# 📦 Roteamento de páginas
+if menu == "🏠 Dashboard":
+    st.title("📊 Dashboard de Projetos (Em construção)")
+
+elif menu == "🗂️ Projetos e Atividades":
+    aba_projetos_atividades(usuario_logado, nome_usuario)
+
+elif menu == "📆 Agenda":
+    st.title("📆 Agenda (Em construção)")
+
+elif menu == "💡 Ideias":
+    st.title("💡 Cadastro de Ideias (Em construção)")
+
+elif menu == "⚠️ Riscos":
+    st.title("⚠️ Cadastro de Riscos (Em construção)")
+
+elif menu == "💰 Ganhos":
+    st.title("💰 Cadastro de Ganhos (Em construção)")
+
+elif menu == "📚 Lições Aprendidas":
+    st.title("📚 Lições Aprendidas (Em construção)")
+
+elif menu == "🔎 Visualização Unificada":
+    st.title("🔎 Visualização Unificada (Em construção)")
+
+elif menu == "🤖 IA Consultor":
+    st.title("🤖 IA Consultor de Projetos (Em construção)")
