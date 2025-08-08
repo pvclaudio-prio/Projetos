@@ -56,7 +56,7 @@ def aba_projetos_atividades(usuario_logado, nome_usuario):
                     df = pd.concat([df, novo], ignore_index=True)
                     salvar_arquivo_excel(df, "projetos.xlsx")
                     st.success("✅ Projeto cadastrado com sucesso!")
-                    st.experimental_rerun()
+                    st.rerun()
 
     # Listar projetos
     st.subheader("📋 Projetos Cadastrados")
@@ -106,7 +106,7 @@ def aba_projetos_atividades(usuario_logado, nome_usuario):
                 df_atividades = pd.concat([df_atividades, nova], ignore_index=True)
                 salvar_arquivo_excel(df_atividades, "atividades.xlsx")
                 st.success("✅ Atividade cadastrada com sucesso!")
-                st.experimental_rerun()
+                st.rerun()
 
     # Listar atividades
     st.subheader("📋 Atividades Cadastradas")
