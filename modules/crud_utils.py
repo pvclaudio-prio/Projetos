@@ -2,6 +2,7 @@ import pandas as pd
 import streamlit as st
 import tempfile
 from modules.drive_utils import conectar_drive
+import openpyxl
 
 def carregar_arquivo_excel(nome_arquivo):
     drive = conectar_drive()
