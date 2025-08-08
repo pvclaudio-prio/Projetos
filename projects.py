@@ -62,7 +62,6 @@ def login():
 usuario_logado, nome_usuario = login()
 
 # 🎨 Sidebar
-st.sidebar.image("assets/logo.png", use_column_width=True)
 st.sidebar.markdown(f"👤 Logado como: **{nome_usuario}**")
 
 menu = st.sidebar.radio("📋 Navegação", [
