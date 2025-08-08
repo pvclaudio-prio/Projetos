@@ -10,6 +10,7 @@ from modules.drive_utils import conectar_drive
 from modules.crud_utils import carregar_arquivo_excel, salvar_arquivo_excel
 import tempfile
 from modules.projetos_atividades import aba_projetos_atividades
+from modules.cadastro_ideias import cadastro_ideias
 
 @st.cache_data
 def carregar_usuarios():
@@ -87,7 +88,7 @@ elif menu == "📆 Agenda":
     st.title("📆 Agenda (Em construção)")
 
 elif menu == "💡 Ideias":
-    st.title("💡 Cadastro de Ideias (Em construção)")
+    cadastro_ideias()
 
 elif menu == "⚠️ Riscos":
     st.title("⚠️ Cadastro de Riscos (Em construção)")
