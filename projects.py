@@ -11,6 +11,7 @@ from modules.crud_utils import carregar_arquivo_excel, salvar_arquivo_excel
 import tempfile
 from modules.projetos_atividades import aba_projetos_atividades
 from modules.cadastro_ideias import cadastro_ideias
+from modules.cadastro_riscos import cadastro_riscos
 
 @st.cache_data
 def carregar_usuarios():
@@ -91,7 +92,7 @@ elif menu == "💡 Ideias":
     cadastro_ideias()
 
 elif menu == "⚠️ Riscos":
-    st.title("⚠️ Cadastro de Riscos (Em construção)")
+    cadastro_riscos()
 
 elif menu == "💰 Ganhos":
     st.title("💰 Cadastro de Ganhos (Em construção)")
