@@ -16,6 +16,7 @@ from modules.agenda import agenda_semanal
 from modules.financeiro_projeto import aba_financeiro_projeto
 from modules.pontos_focais import aba_pontos_focais
 from modules.dashboard import dashboard_principal
+from modules.visualizacao_unificada import registrar_pagina
 
 # Caminho do logo (ajuste se necessário)
 LOGO_PATH = "PRIO_SEM_POLVO_PRIO_PANTONE_LOGOTIPO_Azul.png"
@@ -151,7 +152,10 @@ elif menu == "📚 Lições Aprendidas":
     st.title("📚 Lições Aprendidas (Em construção)")
 
 elif menu == "🔎 Visualização Unificada":
-    st.title("🔎 Visualização Unificada (Em construção)")
+    try:
+        aba_visualizacao_unificada()
+    except Exception as e:
+        st.error(f"Erro ao abrir a aba 'Visuzalização': {e}")
 
 elif menu == "💵 Financeiro do Projeto":
     try:
