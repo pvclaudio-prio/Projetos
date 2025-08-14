@@ -219,6 +219,20 @@ def _toolbar(df_filt: pd.DataFrame) -> tuple[list[str], str]:
                 acao = "exportar"
             if colE.button("🔄 Atualizar", use_container_width=True):
                 acao = "atualizar"
+
+    # Atalhos contextuais
+    with st.container():
+        c1, _, _ = st.columns([1,1,3])
+        if c1.button("👥 Abrir Pontos Focais do Projeto", disabled=not ids):
+            try:
+                sel_id = ids[0]
+                projeto_sel = df_filt.loc[df_filt["id"] == sel_id, "projeto"].iloc[0]
+                st.session_state["projeto_selecionado"] = str(projeto_sel)
+                st.session_state["menu"] = "👥 Pontos Focais"
+                st.experimental_rerun()
+            except Exception:
+                st.warning("Não foi possível identificar o projeto selecionado.")
+
     return ids, acao
 
 
@@ -248,7 +262,7 @@ def aba_projetos_atividades(usuario_logado: str, nome_usuario: str):
     # Filtros (sidebar)
     df_filt = _filtros(df)
 
-    # Toolbar e seleção
+    # Toolbar e seleção (com atalho p/ pontos focais)
     ids_sel, acao = _toolbar(df_filt)
 
     # Exibição
