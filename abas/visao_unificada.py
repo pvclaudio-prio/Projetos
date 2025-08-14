@@ -23,7 +23,7 @@ def _coerce_riscos(df_r: pd.DataFrame) -> pd.DataFrame:
     if "descricao" not in r.columns:
         r["descricao"] = r.get("Descrição", r.get("desc", ""))
 
-    # Severidade: usa 'severidade' se existir; senão tenta mapear de 'impacto'
+    # Severidade (fallback de impacto)
     if "severidade" not in r.columns:
         if "impacto" in r.columns:
             mapa = {"Baixo": "Baixo", "Médio": "Médio", "Medio": "Médio", "Alto": "Alto", "Crítico": "Crítico", "Critico": "Crítico"}
@@ -31,16 +31,15 @@ def _coerce_riscos(df_r: pd.DataFrame) -> pd.DataFrame:
         else:
             r["severidade"] = "Médio"
 
-    # Probabilidade: usa 'probabilidade' se existir; senão mantém se houver
+    # Probabilidade
     if "probabilidade" not in r.columns:
         if "prob" in r.columns:
             r["probabilidade"] = r["prob"]
         else:
             r["probabilidade"] = r.get("Probabilidade", "Possível")
 
-    # Status da tratativa
+    # Status da tratativa (fallback de status simples)
     if "status_tratativa" not in r.columns:
-        # fallback do 'status' simples
         r["status_tratativa"] = r.get("status", "Aberto")
 
     # Responsável
@@ -136,12 +135,15 @@ def aba_visao_unificada(st):
         if df_a_p.empty:
             st.caption("Sem atividades.")
         else:
-            st.dataframe(
-                df_a_p[["descricao", "responsavel", "status", "prazo"]]
-                .rename(columns={"descricao": "Descrição", "responsavel": "Responsável", "prazo": "Prazo"})
-                .sort_values(["status", "prazo", "descricao"]),
-                use_container_width=True,
-            )
+            # ordenar ANTES de renomear para evitar KeyError
+            df_view = df_a_p.sort_values(["status", "prazo", "descricao"])[
+                ["descricao", "responsavel", "status", "prazo"]
+            ].rename(columns={
+                "descricao": "Descrição",
+                "responsavel": "Responsável",
+                "prazo": "Prazo"
+            })
+            st.dataframe(df_view, use_container_width=True)
 
     with c2:
         st.write("#### Riscos")
@@ -186,4 +188,3 @@ def aba_visao_unificada(st):
             .sort_values(["Nome"]),
             use_container_width=True,
         )
-
