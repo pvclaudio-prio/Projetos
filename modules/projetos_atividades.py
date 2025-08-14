@@ -3,8 +3,8 @@ import pandas as pd
 from datetime import datetime, date
 import uuid
 
-# Utils do projeto (já existentes no seu repo)
 from modules.crud_utils import carregar_arquivo_excel, salvar_arquivo_excel
+from modules.core_context import load_df_atividades  # usado para compatibilidade futura do contexto
 
 # Caminhos/base
 BASE_PATH = "bases/projetos_atividades.xlsx"
@@ -30,11 +30,12 @@ COLS = [
 STATUS_OPS = ["Planejado", "Em Andamento", "Concluído", "Atrasado", "Cancelado"]
 PRIOR_OPS = ["Baixa", "Média", "Alta", "Crítica"]
 
+# ──────────────────────────────────────────────────────────────────────────────
+# I/O
+
 @st.cache_data(show_spinner=False)
 def _carregar_base_crud() -> pd.DataFrame:
-    """Carrega a base a partir do Excel. Se não existir, retorna DataFrame vazio com schema.
-    Usa cache para leitura rápida; invalidamos após cada gravação.
-    """
+    """Carrega a base a partir do Excel. Se não existir, retorna DF vazio com schema."""
     try:
         df = carregar_arquivo_excel(BASE_PATH, sheet_name=SHEET_NAME)
         if df is None or df.empty:
@@ -62,28 +63,26 @@ def _carregar_base_crud() -> pd.DataFrame:
 
 
 def _salvar_base_crud(df: pd.DataFrame):
-    """Persistência transacional com validação mínima.
-    - Garante schema
-    - Salva via util centralizada
-    - Limpa cache de leitura
-    """
-    # Validar e organizar colunas
-    missing = [c for c in COLS if c not in df.columns]
-    for c in missing:
-        df[c] = None
+    """Persistência com validação mínima e limpeza de cache."""
+    # Garantir schema
+    for c in COLS:
+        if c not in df.columns:
+            df[c] = None
     df = df[COLS].copy()
 
-    # Conversões
+    # Serializar datas
     for c in ["inicio", "fim"]:
-        if df[c].dtype != "O":
-            df[c] = df[c].astype("O")
-        df[c] = df[c].apply(lambda x: x.isoformat() if isinstance(x, (date,)) else (x or ""))
+        df[c] = df[c].apply(lambda x: x.isoformat() if isinstance(x, date) else (x or ""))
+
+    # Timestamps
     for c in ["criado_em", "atualizado_em"]:
         df[c] = df[c].fillna("").astype(str)
 
     salvar_arquivo_excel(df, BASE_PATH, sheet_name=SHEET_NAME)
     _carregar_base_crud.clear()
 
+# ──────────────────────────────────────────────────────────────────────────────
+# UI helpers
 
 def _kpis(df: pd.DataFrame):
     total = len(df)
@@ -96,23 +95,25 @@ def _kpis(df: pd.DataFrame):
     col3.metric("Em Andamento", andamento)
     col4.metric("Atrasados", atraso)
 
+
 def _filtros(df: pd.DataFrame) -> pd.DataFrame:
+    from datetime import date as _date
+
     with st.sidebar.expander("🔎 Filtros", expanded=False):
         f_proj = st.text_input("Projeto contém")
         f_resp = st.text_input("Responsável contém")
         f_status = st.multiselect("Status", STATUS_OPS)
         f_prior = st.multiselect("Prioridade", PRIOR_OPS)
 
-        # ✅ Streamlit não aceita None; usamos um toggle para aplicar o período
+        # Streamlit não aceita None em date_input; usamos um toggle
         usar_periodo = st.checkbox("Filtrar por período", value=False)
         if usar_periodo:
-            # intervalo padrão: mês corrente até hoje
-            inicio_padrao = date.today().replace(day=1)
-            fim_padrao = date.today()
+            inicio_padrao = _date.today().replace(day=1)
+            fim_padrao = _date.today()
             di, dfim = st.date_input(
                 "Período (início a fim)",
                 value=(inicio_padrao, fim_padrao),
-                format="YYYY-MM-DD"
+                format="YYYY-MM-DD",
             )
         else:
             di, dfim = (None, None)
@@ -128,15 +129,12 @@ def _filtros(df: pd.DataFrame) -> pd.DataFrame:
         out = out[out["prioridade"].isin(f_prior)]
 
     # aplica período somente se habilitado e datas válidas
-    if usar_periodo and isinstance(di, date) and isinstance(dfim, date):
-        out = out[
-            (out["inicio"].notna()) & (pd.to_datetime(out["inicio"]) >= pd.to_datetime(di))
-        ]
-        out = out[
-            (out["fim"].notna()) & (pd.to_datetime(out["fim"]) <= pd.to_datetime(dfim))
-        ]
+    if usar_periodo and isinstance(di, _date) and isinstance(dfim, _date):
+        out = out[(out["inicio"].notna()) & (pd.to_datetime(out["inicio"]) >= pd.to_datetime(di))]
+        out = out[(out["fim"].notna()) & (pd.to_datetime(out["fim"]) <= pd.to_datetime(dfim))]
 
     return out
+
 
 def _form_novo_ou_editar(mode: str, usuario: str, registro: dict | None = None) -> dict | None:
     """Formulário de criação/edição. Retorna o payload salvo ou None."""
@@ -168,8 +166,14 @@ def _form_novo_ou_editar(mode: str, usuario: str, registro: dict | None = None) 
 
         col3, col4, col5 = st.columns(3)
         responsavel = col3.text_input("Responsável", value=default["responsavel"].strip())
-        status = col4.selectbox("Status", STATUS_OPS, index=max(0, STATUS_OPS.index(default["status"]) if default["status"] in STATUS_OPS else 0))
-        prioridade = col5.selectbox("Prioridade", PRIOR_OPS, index=max(0, PRIOR_OPS.index(default["prioridade"]) if default["prioridade"] in PRIOR_OPS else 1))
+        status = col4.selectbox(
+            "Status", STATUS_OPS,
+            index=max(0, STATUS_OPS.index(default["status"]) if default["status"] in STATUS_OPS else 0)
+        )
+        prioridade = col5.selectbox(
+            "Prioridade", PRIOR_OPS,
+            index=max(0, PRIOR_OPS.index(default["prioridade"]) if default["prioridade"] in PRIOR_OPS else 1)
+        )
 
         col6, col7, col8 = st.columns(3)
         inicio = col6.date_input("Início", value=default["inicio"])
@@ -214,10 +218,11 @@ def _toolbar(df_filt: pd.DataFrame) -> tuple[list[str], str]:
     """
     st.write("")
     with st.container():
-        col1, col2 = st.columns([3,2])
+        col1, col2 = st.columns([3, 2])
         with col1:
             ids = st.multiselect(
-                "Selecione registros (por ID)", options=df_filt["id"].tolist(),
+                "Selecione registros (por ID)",
+                options=df_filt["id"].tolist(),
                 format_func=lambda _id: f"{_id} — {df_filt.loc[df_filt['id']==_id, 'atividade'].values[0] if (df_filt['id']==_id).any() else _id}",
                 placeholder="Escolha um ou mais itens para editar/excluir"
             )
@@ -235,15 +240,26 @@ def _toolbar(df_filt: pd.DataFrame) -> tuple[list[str], str]:
             if colE.button("🔄 Atualizar", use_container_width=True):
                 acao = "atualizar"
 
-    # Atalhos contextuais
+    # Atalhos contextuais -> atualizam o contexto central e navegam
     with st.container():
-        c1, _, _ = st.columns([1,1,3])
+        c1, c2, _ = st.columns([1, 1, 3])
         if c1.button("👥 Abrir Pontos Focais do Projeto", disabled=not ids):
             try:
                 sel_id = ids[0]
                 projeto_sel = df_filt.loc[df_filt["id"] == sel_id, "projeto"].iloc[0]
-                st.session_state["projeto_selecionado"] = str(projeto_sel)
+                st.session_state["ctx_projeto"] = str(projeto_sel)
+                st.session_state["ctx_atividade"] = ""  # opcional: limpar atividade
                 st.session_state["menu"] = "👥 Pontos Focais"
+                st.experimental_rerun()
+            except Exception:
+                st.warning("Não foi possível identificar o projeto selecionado.")
+        if c2.button("💵 Abrir Financeiro do Projeto", disabled=not ids):
+            try:
+                sel_id = ids[0]
+                projeto_sel = df_filt.loc[df_filt["id"] == sel_id, "projeto"].iloc[0]
+                st.session_state["ctx_projeto"] = str(projeto_sel)
+                st.session_state["ctx_atividade"] = ""
+                st.session_state["menu"] = "💵 Financeiro do Projeto"
                 st.experimental_rerun()
             except Exception:
                 st.warning("Não foi possível identificar o projeto selecionado.")
@@ -264,6 +280,8 @@ def _tabela(df: pd.DataFrame):
         hide_index=True,
     )
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Página pública
 
 def aba_projetos_atividades(usuario_logado: str, nome_usuario: str):
     st.title("🗂️ Projetos e Atividades")
@@ -277,7 +295,7 @@ def aba_projetos_atividades(usuario_logado: str, nome_usuario: str):
     # Filtros (sidebar)
     df_filt = _filtros(df)
 
-    # Toolbar e seleção (com atalho p/ pontos focais)
+    # Toolbar e seleção (com atalhos que alimentam o contexto central)
     ids_sel, acao = _toolbar(df_filt)
 
     # Exibição
@@ -302,26 +320,26 @@ def aba_projetos_atividades(usuario_logado: str, nome_usuario: str):
     elif acao == "editar":
         if not ids_sel:
             st.warning("Selecione pelo menos um registro para editar.")
-            return
-        _id = ids_sel[0]
-        registro = df.loc[df["id"] == _id].iloc[0].to_dict()
-        st.subheader(f"✏️ Editar Registro — ID {_id}")
-        payload = _form_novo_ou_editar("editar", nome_usuario, registro)
-        if payload is not None:
-            for k, v in payload.items():
-                df.loc[df["id"] == _id, k] = v
-            df.loc[df["id"] == _id, "atualizado_em"] = datetime.now().isoformat(timespec="seconds")
-            _salvar_base_crud(df)
-            st.success("Registro atualizado com sucesso.")
-            st.rerun()
+        else:
+            _id = ids_sel[0]
+            registro = df.loc[df["id"] == _id].iloc[0].to_dict()
+            st.subheader(f"✏️ Editar Registro — ID {_id}")
+            payload = _form_novo_ou_editar("editar", nome_usuario, registro)
+            if payload is not None:
+                for k, v in payload.items():
+                    df.loc[df["id"] == _id, k] = v
+                df.loc[df["id"] == _id, "atualizado_em"] = datetime.now().isoformat(timespec="seconds")
+                _salvar_base_crud(df)
+                st.success("Registro atualizado com sucesso.")
+                st.rerun()
 
     elif acao == "excluir":
         if not ids_sel:
             st.warning("Selecione ao menos um registro para excluir.")
-            return
-        with st.popover("Confirmar exclusão?"):
-            st.write(f"Você está prestes a excluir **{len(ids_sel)}** registro(s). Esta ação é irreversível.")
-            if st.button("Confirmar exclusão", type="primary"):
+        else:
+            st.error(f"Você está prestes a excluir **{len(ids_sel)}** registro(s). Esta ação é irreversível.")
+            confirm = st.checkbox("Confirmo a exclusão permanente dos itens selecionados.")
+            if st.button("Confirmar exclusão", disabled=not confirm, type="primary"):
                 df = df[~df["id"].isin(ids_sel)].copy()
                 _salvar_base_crud(df)
                 st.success("Registros excluídos com sucesso.")
