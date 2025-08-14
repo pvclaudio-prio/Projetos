@@ -1,67 +1,96 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 from datetime import date
-import streamlit as st
 import pandas as pd
+import streamlit as st
 from common import load_base, _parse_date, _sev_to_score, _prob_to_score
 
+def _fill_series(dst: pd.Series, src: pd.Series | str | None, default=""):
+    """Preenche valores vazios/NaN de `dst` com `src` (ou default)."""
+    if isinstance(src, pd.Series):
+        fallback = src
+    elif isinstance(src, str) and src in ("", "None"):
+        fallback = default
+    else:
+        fallback = src
+    # vazio = NaN ou string em branco
+    mask_empty = dst.isna() | dst.astype(str).str.strip().eq("")
+    if isinstance(fallback, pd.Series):
+        return dst.where(~mask_empty, fallback)
+    else:
+        return dst.where(~mask_empty, default if fallback is None else fallback)
+
 def _coerce_riscos(df_r: pd.DataFrame) -> pd.DataFrame:
-    """Normaliza colunas de riscos para um conjunto comum esperado pela visão unificada."""
+    """Normaliza diferentes esquemas de riscos para um conjunto comum."""
     if df_r.empty:
         return df_r
 
     r = df_r.copy()
 
-    # Categoria/Título
+    # categoria: preferir 'categoria'; se vazia, usar 'titulo'
     if "categoria" not in r.columns:
-        if "titulo" in r.columns:
-            r["categoria"] = r["titulo"]
-        else:
-            r["categoria"] = ""
+        r["categoria"] = r.get("titulo", "")
+    else:
+        r["categoria"] = _fill_series(r["categoria"], r.get("titulo", ""), "")
 
-    # Descrição
+    # descricao: usar 'descricao' se houver; senão ficar vazio
     if "descricao" not in r.columns:
         r["descricao"] = r.get("Descrição", r.get("desc", ""))
+    else:
+        r["descricao"] = _fill_series(r["descricao"], r.get("Descrição", r.get("desc", "")), "")
 
-    # Severidade (fallback de impacto)
+    # severidade: se não houver, mapear de 'impacto'
     if "severidade" not in r.columns:
         if "impacto" in r.columns:
             mapa = {"Baixo": "Baixo", "Médio": "Médio", "Medio": "Médio", "Alto": "Alto", "Crítico": "Crítico", "Critico": "Crítico"}
             r["severidade"] = r["impacto"].map(lambda x: mapa.get(str(x), "Médio"))
         else:
             r["severidade"] = "Médio"
-
-    # Probabilidade
-    if "probabilidade" not in r.columns:
-        if "prob" in r.columns:
-            r["probabilidade"] = r["prob"]
+    else:
+        if "impacto" in r.columns:
+            mapa = {"Baixo": "Baixo", "Médio": "Médio", "Medio": "Médio", "Alto": "Alto", "Crítico": "Crítico", "Critico": "Crítico"}
+            r["severidade"] = _fill_series(r["severidade"], r["impacto"].map(lambda x: mapa.get(str(x), "Médio")), "Médio")
         else:
-            r["probabilidade"] = r.get("Probabilidade", "Possível")
+            r["severidade"] = _fill_series(r["severidade"], None, "Médio")
 
-    # Status da tratativa (fallback de status simples)
+    # probabilidade: manter se existir; senão tentar 'prob' ou default
+    if "probabilidade" not in r.columns:
+        r["probabilidade"] = r.get("prob", r.get("Probabilidade", "Possível"))
+    else:
+        r["probabilidade"] = _fill_series(r["probabilidade"], r.get("prob", r.get("Probabilidade", "Possível")), "Possível")
+
+    # status_tratativa: se não existir ou estiver vazio, usar 'status'
     if "status_tratativa" not in r.columns:
         r["status_tratativa"] = r.get("status", "Aberto")
+    else:
+        r["status_tratativa"] = _fill_series(r["status_tratativa"], r.get("status", "Aberto"), "Aberto")
 
-    # Responsável
+    # responsavel
     if "responsavel" not in r.columns:
         r["responsavel"] = r.get("responsável", "")
+    else:
+        r["responsavel"] = _fill_series(r["responsavel"], r.get("responsável", ""), "")
 
-    # Prazo da tratativa
+    # prazo_tratativa: se não existir, tentar 'prazo'; normalizar data
     if "prazo_tratativa" not in r.columns:
         r["prazo_tratativa"] = r.get("prazo", None)
     r["prazo_tratativa"] = r["prazo_tratativa"].apply(_parse_date)
 
-    # Impacto financeiro
+    # impacto_financeiro: default 0.0
     if "impacto_financeiro" not in r.columns:
-        r["impacto_financeiro"] = r.get("impacto_R$", r.get("impacto_financeiro_estimado", 0.0))
+        r["impacto_financeiro"] = 0.0
+    r["impacto_financeiro"] = r["impacto_financeiro"].fillna(0.0)
 
-    # Score
-    r["Score"] = r.apply(lambda x: _sev_to_score(str(x.get("severidade", ""))) * _prob_to_score(str(x.get("probabilidade", ""))), axis=1)
+    # Score p/ priorização
+    r["Score"] = r.apply(
+        lambda x: _sev_to_score(str(x.get("severidade", ""))) * _prob_to_score(str(x.get("probabilidade", ""))),
+        axis=1,
+    )
     return r
 
 def aba_visao_unificada(st):
     st.subheader("📊 Visão Unificada do Projeto")
-    st.caption("Resumo 360°: escopo, atividades, riscos, financeiro e pontos focais, tudo em uma única tela.")
+    st.caption("Resumo 360°: escopo, atividades, riscos, financeiro e pontos focais, numa única tela.")
 
     df_p  = load_base("projetos").copy()
     df_a  = load_base("atividades").copy()
@@ -78,13 +107,12 @@ def aba_visao_unificada(st):
 
     colA, colB, colC = st.columns([2,1,1])
 
-    # ----------------- Escopo -----------------
+    # Escopo
     with colA:
         st.write("### Escopo")
         st.write(df_p.loc[df_p["id"] == pid, "escopo"].iloc[0] or "(Sem escopo registrado)")
 
-    # ----------------- KPIs -----------------
-    # Atividades
+    # KPIs de atividades
     df_a_p = df_a[df_a.get("projeto_id", "") == pid].copy()
     hoje = date.today()
     if not df_a_p.empty:
@@ -99,7 +127,7 @@ def aba_visao_unificada(st):
     # Riscos (normalizados)
     df_r_p = _coerce_riscos(df_r[df_r.get("projeto_id", "") == pid].copy())
     if not df_r_p.empty:
-        riscos_abertos = len(df_r_p[df_r_p["status_tratativa"].astype(str).isin(["Aberto", "Em tratamento", "Mitigando"])])
+        riscos_abertos = len(df_r_p[df_r_p["status_tratativa"].astype(str).isin(["Aberto","Em tratamento","Mitigando","Aberto "])])
         risco_top = df_r_p.sort_values("Score", ascending=False).head(1)
         risco_top_txt = (
             f"{risco_top.iloc[0]['categoria']}: {str(risco_top.iloc[0]['descricao'])[:80]} (Score {int(risco_top.iloc[0]['Score'])})"
@@ -127,7 +155,7 @@ def aba_visao_unificada(st):
 
     st.divider()
 
-    # ----------------- Detalhes -----------------
+    # Detalhes
     c1, c2 = st.columns(2)
 
     with c1:
@@ -135,14 +163,9 @@ def aba_visao_unificada(st):
         if df_a_p.empty:
             st.caption("Sem atividades.")
         else:
-            # ordenar ANTES de renomear para evitar KeyError
             df_view = df_a_p.sort_values(["status", "prazo", "descricao"])[
                 ["descricao", "responsavel", "status", "prazo"]
-            ].rename(columns={
-                "descricao": "Descrição",
-                "responsavel": "Responsável",
-                "prazo": "Prazo"
-            })
+            ].rename(columns={"descricao": "Descrição", "responsavel": "Responsável", "prazo": "Prazo"})
             st.dataframe(df_view, use_container_width=True)
 
     with c2:
@@ -151,18 +174,15 @@ def aba_visao_unificada(st):
             st.caption("Sem riscos.")
         else:
             st.dataframe(
-                df_r_p[["categoria", "descricao", "severidade", "probabilidade", "status_tratativa", "responsavel", "prazo_tratativa", "impacto_financeiro", "Score"]]
-                .rename(columns={
-                    "categoria": "Categoria",
-                    "descricao": "Descrição",
-                    "severidade": "Severidade",
-                    "probabilidade": "Probabilidade",
-                    "status_tratativa": "Status",
-                    "responsavel": "Responsável",
-                    "prazo_tratativa": "Prazo tratativa",
+                df_r_p[[
+                    "categoria","descricao","severidade","probabilidade",
+                    "status_tratativa","responsavel","prazo_tratativa","impacto_financeiro","Score"
+                ]].rename(columns={
+                    "categoria": "Categoria","descricao": "Descrição","severidade": "Severidade",
+                    "probabilidade": "Probabilidade","status_tratativa": "Status",
+                    "responsavel": "Responsável","prazo_tratativa": "Prazo tratativa",
                     "impacto_financeiro": "Impacto (BRL)"
-                })
-                .sort_values(["Score"], ascending=False),
+                }).sort_values(["Score"], ascending=False),
                 use_container_width=True,
             )
 
@@ -171,20 +191,21 @@ def aba_visao_unificada(st):
         st.caption("Sem lançamentos financeiros.")
     else:
         st.dataframe(
-            df_f_p[["data", "categoria", "descricao", "valor", "tipo"]]
-            .rename(columns={"data": "Data", "categoria": "Categoria", "descricao": "Descrição", "valor": "Valor", "tipo": "Tipo"})
+            df_f_p[["data","categoria","descricao","valor","tipo"]]
+            .rename(columns={"data":"Data","categoria":"Categoria","descricao":"Descrição","valor":"Valor","tipo":"Tipo"})
             .sort_values(["Data"]),
             use_container_width=True,
         )
 
     st.write("#### Pontos Focais")
-    df_pf_p = df_pf[df_pf.get("projeto_id", "") == pid].copy()
+    df_pf = load_base("pontos_focais").copy()
+    df_pf_p = df_pf[df_pf.get("projeto_id","") == pid].copy()
     if df_pf_p.empty:
         st.caption("Sem pontos focais.")
     else:
         st.dataframe(
-            df_pf_p[["nome", "email", "telefone", "funcao", "observacoes"]]
-            .rename(columns={"nome": "Nome", "email": "E-mail", "telefone": "Telefone", "funcao": "Função", "observacoes": "Observações"})
+            df_pf_p[["nome","email","telefone","funcao","observacoes"]]
+            .rename(columns={"nome":"Nome","email":"E-mail","telefone":"Telefone","funcao":"Função","observacoes":"Observações"})
             .sort_values(["Nome"]),
             use_container_width=True,
         )
