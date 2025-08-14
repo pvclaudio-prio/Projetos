@@ -2,28 +2,50 @@
 from __future__ import annotations
 import os, uuid
 from datetime import datetime, date
-from typing import Optional
+from typing import Optional, Dict
 import pandas as pd
 
 # ============================
 # Configurações & Caminhos
 # ============================
 APP_NAME = "Gestão de Projetos"
-BASE_DIR = os.environ.get("APP_DATA_DIR", ".")
-ARQ_PROJETOS   = os.path.join(BASE_DIR, "projetos.csv")
-ARQ_ATIVIDADES = os.path.join(BASE_DIR, "atividades.csv")
-ARQ_FINANCEIRO = os.path.join(BASE_DIR, "financeiro_projeto.csv")
-ARQ_PONTOS     = os.path.join(BASE_DIR, "pontos_focais.csv")
-ARQ_RISCOS     = os.path.join(BASE_DIR, "riscos.csv")
+BASE_DIR = os.environ.get("APP_DATA_DIR", "./data_excel")
+
+# Caminhos em EXCEL (fallback local)
+XLSX_PROJETOS   = os.path.join(BASE_DIR, "projetos.xlsx")
+XLSX_ATIVIDADES = os.path.join(BASE_DIR, "atividades.xlsx")
+XLSX_FINANCEIRO = os.path.join(BASE_DIR, "financeiro_projeto.xlsx")
+XLSX_PONTOS     = os.path.join(BASE_DIR, "pontos_focais.xlsx")
+XLSX_RISCOS     = os.path.join(BASE_DIR, "riscos.xlsx")
+
+# (Compat) caminhos CSV legados — apenas para leitura caso existam
+CSV_PROJETOS   = os.path.join(BASE_DIR, "projetos.csv")
+CSV_ATIVIDADES = os.path.join(BASE_DIR, "atividades.csv")
+CSV_FINANCEIRO = os.path.join(BASE_DIR, "financeiro_projeto.csv")
+CSV_PONTOS     = os.path.join(BASE_DIR, "pontos_focais.csv")
+CSV_RISCOS     = os.path.join(BASE_DIR, "riscos.csv")
 
 STATUS_OPCOES = ["Pendente", "Em andamento", "Bloqueada", "Concluída"]
 RISCO_SEVERIDADE = ["Baixo", "Médio", "Alto", "Crítico"]
 RISCO_PROBABILIDADE = ["Rara", "Improvável", "Possível", "Provável", "Quase certa"]
-RISCO_STATUS = ["Aberto", "Em tratamento", "Mitigado", "Encerrado"]
+RISCO_STATUS = ["Aberto", "Em tratamento", "Mitigado", "Encerrado"]  # mantenha em sincronia com sua aba de Riscos
 
 # ============================
-# Persistência (CSV + wrappers)
+# Persistência (wrappers externos + Excel local com leitura CSV legado)
 # ============================
+def _xlsx_load(path: str) -> pd.DataFrame:
+    if not os.path.exists(path):
+        return pd.DataFrame()
+    try:
+        return pd.read_excel(path)
+    except Exception:
+        return pd.DataFrame()
+
+def _xlsx_save(df: pd.DataFrame, path: str, sheet_name: str) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with pd.ExcelWriter(path, engine="xlsxwriter") as writer:
+        (df if isinstance(df, pd.DataFrame) else pd.DataFrame()).to_excel(writer, index=False, sheet_name=sheet_name[:31])
+
 def _csv_load(path: str, dtypes: Optional[dict] = None) -> pd.DataFrame:
     if not os.path.exists(path):
         return pd.DataFrame()
@@ -32,11 +54,7 @@ def _csv_load(path: str, dtypes: Optional[dict] = None) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
 
-def _csv_save(df: pd.DataFrame, path: str) -> None:
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    df.to_csv(path, index=False)
-
-# Wrappers externos opcionais (ex.: Google Drive/Sheets)
+# Wrappers externos opcionais (Drive/Sheets/Excel em nuvem via app_storage.py)
 try:
     from app_storage import load_base as _external_load_base  # type: ignore
     from app_storage import save_base as _external_save_base  # type: ignore
@@ -44,31 +62,64 @@ except Exception:
     _external_load_base = None
     _external_save_base = None
 
+# mapas auxiliares
+_XLSX_MAP: Dict[str, str] = {
+    "projetos": XLSX_PROJETOS,
+    "atividades": XLSX_ATIVIDADES,
+    "financeiro": XLSX_FINANCEIRO,
+    "pontos_focais": XLSX_PONTOS,
+    "riscos": XLSX_RISCOS,
+}
+_CSV_MAP: Dict[str, str] = {
+    "projetos": CSV_PROJETOS,
+    "atividades": CSV_ATIVIDADES,
+    "financeiro": CSV_FINANCEIRO,
+    "pontos_focais": CSV_PONTOS,
+    "riscos": CSV_RISCOS,
+}
+
 def load_base(nome: str) -> pd.DataFrame:
+    """Tenta: 1) wrapper externo (Drive), 2) Excel local, 3) CSV legado (somente leitura)."""
+    # 1) externo (Drive/Sheets/Excel em nuvem) — PRIORITÁRIO
     if _external_load_base:
         try:
-            return _external_load_base(nome)
+            df = _external_load_base(nome)
+            if isinstance(df, pd.DataFrame):
+                return df
         except Exception:
             pass
-    if nome == "projetos":      return _csv_load(ARQ_PROJETOS)
-    if nome == "atividades":    return _csv_load(ARQ_ATIVIDADES)
-    if nome == "financeiro":    return _csv_load(ARQ_FINANCEIRO)
-    if nome == "pontos_focais": return _csv_load(ARQ_PONTOS)
-    if nome == "riscos":        return _csv_load(ARQ_RISCOS)
+
+    # 2) EXCEL local
+    xlsx = _XLSX_MAP.get(nome)
+    if xlsx:
+        df = _xlsx_load(xlsx)
+        if not df.empty:
+            return df
+
+    # 3) CSV legado (se existir), útil para migração automática
+    csv = _CSV_MAP.get(nome)
+    if csv:
+        df = _csv_load(csv)
+        if not df.empty:
+            return df
+
     return pd.DataFrame()
 
 def save_base(df: pd.DataFrame, nome: str) -> None:
+    """Tenta salvar via wrapper externo; se não houver, salva em EXCEL local."""
+    # 1) externo (Drive)
     if _external_save_base:
         try:
             _external_save_base(df, nome)
             return
         except Exception:
             pass
-    if nome == "projetos":      _csv_save(df, ARQ_PROJETOS)
-    elif nome == "atividades":  _csv_save(df, ARQ_ATIVIDADES)
-    elif nome == "financeiro":  _csv_save(df, ARQ_FINANCEIRO)
-    elif nome == "pontos_focais": _csv_save(df, ARQ_PONTOS)
-    elif nome == "riscos":      _csv_save(df, ARQ_RISCOS)
+
+    # 2) EXCEL local
+    xlsx = _XLSX_MAP.get(nome)
+    if xlsx:
+        _xlsx_save(df, xlsx, sheet_name=nome)
+        return
 
 # ============================
 # Utilitários
@@ -99,8 +150,9 @@ def _prob_to_score(prob: str) -> int:
 # Garantia de Schema
 # ============================
 def ensure_bases() -> None:
-    """Cria/migra as bases mínimas (CSVs) para o app."""
-    # PROJETOS
+    """Cria/migra as bases mínimas (funciona com Drive via wrapper ou Excel local)."""
+
+    # -------- PROJETOS --------
     df_p = load_base("projetos")
     if df_p.empty:
         df_p = pd.DataFrame(columns=["id", "nome_projeto", "escopo", "criado_em", "atualizado_em"])
@@ -118,7 +170,7 @@ def ensure_bases() -> None:
             if col not in df_p.columns: df_p[col] = _now_iso()
     save_base(df_p, "projetos")
 
-    # ATIVIDADES
+    # -------- ATIVIDADES --------
     df_a = load_base("atividades")
     if df_a.empty:
         df_a = pd.DataFrame(columns=[
@@ -141,7 +193,7 @@ def ensure_bases() -> None:
             })
     save_base(df_a, "atividades")
 
-    # FINANCEIRO
+    # -------- FINANCEIRO --------
     df_f = load_base("financeiro")
     if df_f.empty:
         df_f = pd.DataFrame(columns=[
@@ -156,7 +208,7 @@ def ensure_bases() -> None:
             if col not in df_f.columns: df_f[col] = _now_iso()
     save_base(df_f, "financeiro")
 
-    # PONTOS FOCAIS
+    # -------- PONTOS FOCAIS --------
     df_pf = load_base("pontos_focais")
     if df_pf.empty:
         df_pf = pd.DataFrame(columns=[
@@ -171,7 +223,7 @@ def ensure_bases() -> None:
             if col not in df_pf.columns: df_pf[col] = _now_iso()
     save_base(df_pf, "pontos_focais")
 
-    # RISCOS
+    # -------- RISCOS --------
     df_r = load_base("riscos")
     if df_r.empty:
         df_r = pd.DataFrame(columns=[
@@ -187,4 +239,3 @@ def ensure_bases() -> None:
         for col in ("criado_em","atualizado_em"):
             if col not in df_r.columns: df_r[col] = _now_iso()
     save_base(df_r, "riscos")
-
