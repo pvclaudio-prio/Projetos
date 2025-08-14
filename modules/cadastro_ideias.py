@@ -10,9 +10,11 @@ import numpy as np
 import streamlit as st
 
 # -----------------------------
-# Helpers: Google Drive (PyDrive2)
+# Helpers: Google Drive (PyDrive2) — usando o padrão do usuário
 # -----------------------------
 try:
+    import httplib2
+    from oauth2client.client import OAuth2Credentials
     from pydrive2.auth import GoogleAuth
     from pydrive2.drive import GoogleDrive
     HAS_GDRIVE = True
@@ -20,65 +22,78 @@ except Exception:
     HAS_GDRIVE = False
 
 
-def _gdrive_auth() -> Optional[GoogleDrive]:
-    """Autentica no Google Drive via st.secrets. Retorna instância do GoogleDrive ou None se falhar."""
+def conectar_drive() -> Optional[GoogleDrive]:
+    """Autentica no Google Drive usando o modelo do usuário (st.secrets["credentials"])."""
     if not HAS_GDRIVE:
         return None
+    cred_dict = st.secrets.get("credentials")
+    if not cred_dict:
+        st.warning("Segredo 'credentials' não encontrado em st.secrets.")
+        return None
     try:
+        credentials = OAuth2Credentials(
+            access_token=cred_dict.get("access_token"),
+            client_id=cred_dict.get("client_id"),
+            client_secret=cred_dict.get("client_secret"),
+            refresh_token=cred_dict.get("refresh_token"),
+            token_expiry=datetime.strptime(cred_dict.get("token_expiry"), "%Y-%m-%dT%H:%M:%SZ") if cred_dict.get("token_expiry") else None,
+            token_uri=cred_dict.get("token_uri", "https://oauth2.googleapis.com/token"),
+            user_agent=cred_dict.get("user_agent", "streamlit-app/1.0"),
+            revoke_uri=cred_dict.get("revoke_uri", "https://oauth2.googleapis.com/revoke"),
+        )
+        if not credentials.access_token or credentials.access_token_expired:
+            credentials.refresh(httplib2.Http())
         gauth = GoogleAuth()
-        gauth.settings['client_config_backend'] = 'settings'
-        gauth.settings['client_config'] = {
-            "client_id": st.secrets["google"]["client_id"],
-            "client_secret": st.secrets["google"]["client_secret"],
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "revoke_uri": "https://oauth2.googleapis.com/revoke",
-            "redirect_uri": "urn:ietf:wg:oauth:2.0:oob"
-        }
-        gauth.credentials = gauth.GetFlow()  # init flow
-        # Monta credenciais usando refresh_token permanente (installed app)
-        gauth.credentials = gauth.flow.credentials
-        gauth.credentials.token = None
-        gauth.credentials.refresh_token = st.secrets["google"]["refresh_token"]
-        gauth.credentials.client_id = st.secrets["google"]["client_id"]
-        gauth.credentials.client_secret = st.secrets["google"]["client_secret"]
-        gauth.credentials.scopes = [
-            'https://www.googleapis.com/auth/drive',
-            'https://www.googleapis.com/auth/drive.file'
-        ]
-        # força refresh
-        gauth.Refresh()
+        gauth.credentials = credentials
         return GoogleDrive(gauth)
     except Exception as e:
         st.warning(f"Falha ao autenticar no Google Drive: {e}")
         return None
 
 
-def _ensure_drive_folder(drive: GoogleDrive, parent: Optional[str], folder_name: str) -> Optional[str]:
-    """Garante a existência de uma pasta no Drive. Retorna folder_id."""
+def obter_id_pasta(nome_pasta: str, parent_id: Optional[str] = None) -> Optional[str]:
+    drive = conectar_drive()
+    if not drive:
+        return None
     try:
-        query = f"title = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-        if parent:
-            query += f" and '{parent}' in parents"
-        flist = drive.ListFile({'q': query}).GetList()
-        if flist:
-            return flist[0]['id']
-        # cria
+        query = f"title = '{nome_pasta}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        if parent_id:
+            query += f" and '{parent_id}' in parents"
+        resultado = drive.ListFile({'q': query}).GetList()
+        if resultado:
+            return resultado[0]['id']
+        return None
+    except Exception:
+        return None
+
+
+def garantir_pasta(nome_pasta: str, parent_id: Optional[str] = None) -> Optional[str]:
+    """Obtém o ID da pasta; se não existir, cria."""
+    drive = conectar_drive()
+    if not drive:
+        return None
+    pasta_id = obter_id_pasta(nome_pasta, parent_id)
+    if pasta_id:
+        return pasta_id
+    try:
         meta = {
-            'title': folder_name,
+            'title': nome_pasta,
             'mimeType': 'application/vnd.google-apps.folder'
         }
-        if parent:
-            meta['parents'] = [{'id': parent}]
+        if parent_id:
+            meta['parents'] = [{'id': parent_id}]
         folder = drive.CreateFile(meta)
         folder.Upload()
         return folder['id']
     except Exception as e:
-        st.warning(f"Não foi possível garantir pasta '{folder_name}' no Drive: {e}")
+        st.warning(f"Não foi possível criar a pasta '{nome_pasta}' no Drive: {e}")
         return None
 
 
-def _drive_find_file(drive: GoogleDrive, filename: str, parent_id: Optional[str]) -> Optional[str]:
+def _drive_find_file(filename: str, parent_id: Optional[str]) -> Optional[str]:
+    drive = conectar_drive()
+    if not drive:
+        return None
     try:
         query = f"title = '{filename}' and trashed = false"
         if parent_id:
@@ -89,25 +104,30 @@ def _drive_find_file(drive: GoogleDrive, filename: str, parent_id: Optional[str]
         return None
 
 
-def _drive_download_excel(drive: GoogleDrive, file_id: str) -> Optional[pd.DataFrame]:
+def _drive_download_excel(file_id: str) -> Optional[pd.DataFrame]:
+    drive = conectar_drive()
+    if not drive:
+        return None
     try:
         f = drive.CreateFile({'id': file_id})
-        content = io.BytesIO()
-        f.GetContentFile('temp.xlsx')
-        df = pd.read_excel('temp.xlsx')
-        os.remove('temp.xlsx')
+        tmp = 'temp_download.xlsx'
+        f.GetContentFile(tmp)
+        df = pd.read_excel(tmp)
+        os.remove(tmp)
         return df
     except Exception as e:
         st.warning(f"Falha ao baixar arquivo do Drive: {e}")
         return None
 
 
-def _drive_upload_excel(drive: GoogleDrive, df: pd.DataFrame, filename: str, parent_id: Optional[str]) -> Optional[str]:
+def _drive_upload_excel(df: pd.DataFrame, filename: str, parent_id: Optional[str]) -> Optional[str]:
+    drive = conectar_drive()
+    if not drive:
+        return None
     try:
-        # salva local
         temp_path = f"/tmp/{filename}"
         df.to_excel(temp_path, index=False)
-        file_id = _drive_find_file(drive, filename, parent_id)
+        file_id = _drive_find_file(filename, parent_id)
         if file_id:
             f = drive.CreateFile({'id': file_id})
         else:
@@ -129,23 +149,17 @@ def _drive_upload_excel(drive: GoogleDrive, df: pd.DataFrame, filename: str, par
 # -----------------------------
 class Storage:
     def __init__(self):
-        self.drive = _gdrive_auth()
         self.pasta_bases = st.secrets.get('pastas', {}).get('pasta_bases', 'bases')
         self.pasta_backups = st.secrets.get('pastas', {}).get('pasta_backups', 'backups')
-        self.bases_id = None
-        self.backups_id = None
-        if self.drive:
-            self.bases_id = _ensure_drive_folder(self.drive, None, self.pasta_bases)
-            self.backups_id = _ensure_drive_folder(self.drive, None, self.pasta_backups)
+        self.bases_id = garantir_pasta(self.pasta_bases)
+        self.backups_id = garantir_pasta(self.pasta_backups)
 
     def load_excel(self, filename: str, create_if_missing: bool = True, schema: Optional[dict] = None) -> pd.DataFrame:
-        # Tenta Drive
-        if self.drive and self.bases_id:
-            file_id = _drive_find_file(self.drive, filename, self.bases_id)
-            if file_id:
-                df = _drive_download_excel(self.drive, file_id)
-                if df is not None:
-                    return df
+        file_id = _drive_find_file(filename, self.bases_id)
+        if file_id:
+            df = _drive_download_excel(file_id)
+            if df is not None:
+                return df
         # Fallback local
         local_path = os.path.join(self.pasta_bases, filename)
         os.makedirs(self.pasta_bases, exist_ok=True)
@@ -160,9 +174,8 @@ class Storage:
     def save_excel(self, df: pd.DataFrame, filename: str):
         # Backup antes de salvar
         self.backup(df, prefix=filename.replace('.xlsx', ''))
-        # Drive
-        if self.drive and self.bases_id:
-            _drive_upload_excel(self.drive, df, filename, self.bases_id)
+        if self.bases_id:
+            _drive_upload_excel(df, filename, self.bases_id)
         # Local
         local_path = os.path.join(self.pasta_bases, filename)
         os.makedirs(self.pasta_bases, exist_ok=True)
@@ -171,10 +184,8 @@ class Storage:
     def backup(self, df: pd.DataFrame, prefix: str):
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         fname = f"{prefix}_backup_{ts}.xlsx"
-        # Drive backup
-        if self.drive and self.backups_id:
-            _drive_upload_excel(self.drive, df, fname, self.backups_id)
-        # Local
+        if self.backups_id:
+            _drive_upload_excel(df, fname, self.backups_id)
         os.makedirs(self.pasta_backups, exist_ok=True)
         df.to_excel(os.path.join(self.pasta_backups, fname), index=False)
 
@@ -210,7 +221,6 @@ def _ensure_columns(df: pd.DataFrame, schema: dict) -> pd.DataFrame:
     for col, _ in schema.items():
         if col not in df.columns:
             df[col] = np.nan
-    # reordena
     return df[list(schema.keys())]
 
 
@@ -219,10 +229,17 @@ def _calc_scores(alcance: int, impacto: int, confianca: int, esforco: int, compl
     score_ice = round((impacto * confianca) / max(esforco, 1), 2)
     # RICE: (Alcance * Impacto * Confiança) / Esforço
     score_rice = round((alcance * impacto * confianca) / max(esforco, 1), 2)
-    # Ajuste opcional pela complexidade (penalização leve)
+    # Penalização leve pela complexidade
     score_ice = round(score_ice / (1 + (complexidade - 1) * 0.05), 2)
     score_rice = round(score_rice / (1 + (complexidade - 1) * 0.05), 2)
     return score_ice, score_rice
+
+
+def _to_excel_bytes(df: pd.DataFrame) -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False)
+    return output.getvalue()
 
 
 # -----------------------------
@@ -250,7 +267,10 @@ def aba_cadastro_ideias():
 
             col3, col4, col5 = st.columns(3)
             prioridade = col3.selectbox("Prioridade", ["Baixa", "Média", "Alta", "Crítica"], index=1)
-            projeto_nome = col4.selectbox("Projeto relacionado (opcional)", ["<sem projeto>"] + df_projetos.get('nome_projeto', pd.Series([])).dropna().unique().tolist())
+            projeto_nome = col4.selectbox(
+                "Projeto relacionado (opcional)",
+                ["<sem projeto>"] + df_projetos.get('nome_projeto', pd.Series([])).dropna().unique().tolist()
+            )
             autor = col5.text_input("Autor (quem está sugerindo)")
 
             col6, col7, col8, col9, col10 = st.columns(5)
@@ -332,15 +352,15 @@ def aba_cadastro_ideias():
     st.markdown("---")
     st.subheader("✏️ Edição rápida / Status")
     colu1, colu2, colu3 = st.columns([3, 2, 2])
-    idea_id_sel = colu1.selectbox("Selecione a ideia (por título)", ["<selecione>"] + df_ideias['titulo'].fillna('').tolist())
+    idea_titulo_sel = colu1.selectbox("Selecione a ideia (por título)", ["<selecione>"] + df_ideias['titulo'].fillna('').tolist())
     novo_status = colu2.selectbox("Novo status", ["Novo", "Em avaliação", "Aprovado", "Rejeitado", "Em andamento", "Concluído"], index=0)
     acao = colu3.selectbox("Ação", ["Atualizar status", "Recalcular scores", "Excluir ideia"], index=0)
 
     if st.button("Executar ação", type="primary"):
-        if idea_id_sel == "<selecione>":
+        if idea_titulo_sel == "<selecione>":
             st.error("Selecione uma ideia.")
         else:
-            idx = df_ideias[df_ideias['titulo'] == idea_id_sel].index
+            idx = df_ideias[df_ideias['titulo'] == idea_titulo_sel].index
             if len(idx) == 0:
                 st.error("Ideia não encontrada.")
             else:
@@ -391,15 +411,8 @@ def aba_cadastro_ideias():
         st.dataframe(top_ice[['titulo','nome_projeto','prioridade','score_ICE','status']], use_container_width=True, hide_index=True)
 
     st.info(
-        "Dica: utilize os campos de alcance/impacto/confiança/esforço/complexidade para priorizar. "
+        "Dica: utilize alcance/impacto/confiança/esforço/complexidade para priorizar. "
         "Você pode sincronizar ideias aprovadas diretamente com a base de projetos no seu app.")
-
-
-def _to_excel_bytes(df: pd.DataFrame) -> bytes:
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False)
-    return output.getvalue()
 
 
 # -----------------------------
@@ -416,6 +429,12 @@ def registrar_pagina(router: dict):
     # depois no sidebar/menu: router["💡 Ideias"]()
     """
     router["💡 Ideias"] = aba_cadastro_ideias
+
+# Compatibilidade com import legado:
+# allow: from modules.cadastro_ideias import cadastro_ideias
+
+def cadastro_ideias():
+    return aba_cadastro_ideias()
 
 
 if __name__ == "__main__":
