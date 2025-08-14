@@ -80,7 +80,6 @@ def _load_lanc() -> pd.DataFrame:
         df["confianca"] = pd.to_numeric(df["confianca"], errors="coerce").fillna(0.7)
     return df[COLS_LANC].copy()
 
-
 def _save_params(df: pd.DataFrame):
     df = df[COLS_PARAM].copy()
     df["data_base"] = df["data_base"].apply(lambda x: x.isoformat() if isinstance(x, date) else (x or ""))
@@ -88,14 +87,12 @@ def _save_params(df: pd.DataFrame):
     salvar_arquivo_excel(df, BASE_PARAM, sheet_name=SHEET_PARAM)
     _load_params.clear()
 
-
 def _save_lanc(df: pd.DataFrame):
     df = df[COLS_LANC].copy()
     df["data_inicio"] = df["data_inicio"].apply(lambda x: x.isoformat() if isinstance(x, date) else (x or ""))
     df["atualizado_em"] = datetime.now().isoformat(timespec="seconds")
     salvar_arquivo_excel(df, BASE_LANC, sheet_name=SHEET_LANC)
     _load_lanc.clear()
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Cálculos financeiros
@@ -168,7 +165,6 @@ def _expandir_fluxo(df_lanc: pd.DataFrame, projeto: str, params: dict) -> pd.Dat
 
     return fluxo
 
-
 def _npv(fluxo: pd.DataFrame, taxa_anual: float, data_base: date) -> float:
     if fluxo.empty:
         return 0.0
@@ -176,21 +172,19 @@ def _npv(fluxo: pd.DataFrame, taxa_anual: float, data_base: date) -> float:
     meses = ((pd.to_datetime(fluxo["competencia"]) - pd.to_datetime(data_base)).dt.days // 30).clip(lower=0)
     return float((fluxo["valor"] / ((1 + rm) ** meses)).sum())
 
-
 def _payback(fluxo: pd.DataFrame, descontado: bool, taxa_anual: float, data_base: date) -> int | None:
     if fluxo.empty:
         return None
     rm = (1 + taxa_anual) ** (1/12) - 1
     fluxo = fluxo.sort_values("competencia").copy()
     saldo = 0.0
-    for idx, row in fluxo.iterrows():
+    for _, row in fluxo.iterrows():
         t = max(0, (pd.to_datetime(row["competencia"]) - pd.to_datetime(data_base)).days // 30)
         v = row["valor"] / ((1 + rm) ** t) if descontado else row["valor"]
         saldo += v
         if saldo >= 0:
             return int(t)  # meses até payback
     return None
-
 
 def _tir(fluxo: pd.DataFrame, data_base: date) -> float | None:
     if fluxo.empty:
@@ -203,14 +197,13 @@ def _tir(fluxo: pd.DataFrame, data_base: date) -> float | None:
     for m, v in zip(meses, fluxo["valor" ]):
         serie[m] += v
     try:
-        irr = np.irr(serie)
+        irr = np.irr(serie)  # numpy>=1.20 moveu p/ numpy_financial; funciona em muitos ambientes
         if irr is None:
             return None
         # converter para anual aproximado
         return float((1 + irr) ** 12 - 1)
     except Exception:
         return None
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # UI principal
