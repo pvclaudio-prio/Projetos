@@ -15,6 +15,7 @@ from modules.cadastro_riscos import cadastro_riscos
 from modules.agenda import agenda_semanal
 from modules.financeiro_projeto import aba_financeiro_projeto
 from modules.pontos_focais import aba_pontos_focais
+from modules.dashboard import dashboard_principal
 
 # Caminho do logo (ajuste se necessário)
 LOGO_PATH = "PRIO_SEM_POLVO_PRIO_PANTONE_LOGOTIPO_Azul.png"
