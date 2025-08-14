@@ -96,14 +96,26 @@ def _kpis(df: pd.DataFrame):
     col3.metric("Em Andamento", andamento)
     col4.metric("Atrasados", atraso)
 
-
 def _filtros(df: pd.DataFrame) -> pd.DataFrame:
     with st.sidebar.expander("🔎 Filtros", expanded=False):
         f_proj = st.text_input("Projeto contém")
         f_resp = st.text_input("Responsável contém")
         f_status = st.multiselect("Status", STATUS_OPS)
         f_prior = st.multiselect("Prioridade", PRIOR_OPS)
-        f_periodo = st.date_input("Período (início a fim)", value=(None, None))
+
+        # ✅ Streamlit não aceita None; usamos um toggle para aplicar o período
+        usar_periodo = st.checkbox("Filtrar por período", value=False)
+        if usar_periodo:
+            # intervalo padrão: mês corrente até hoje
+            inicio_padrao = date.today().replace(day=1)
+            fim_padrao = date.today()
+            di, dfim = st.date_input(
+                "Período (início a fim)",
+                value=(inicio_padrao, fim_padrao),
+                format="YYYY-MM-DD"
+            )
+        else:
+            di, dfim = (None, None)
 
     out = df.copy()
     if f_proj:
@@ -114,14 +126,17 @@ def _filtros(df: pd.DataFrame) -> pd.DataFrame:
         out = out[out["status"].isin(f_status)]
     if f_prior:
         out = out[out["prioridade"].isin(f_prior)]
-    if isinstance(f_periodo, tuple) and any(f_periodo):
-        di, dfim = f_periodo
-        if di:
-            out = out[(out["inicio"].notna()) & (pd.to_datetime(out["inicio"]) >= pd.to_datetime(di))]
-        if dfim:
-            out = out[(out["fim"].notna()) & (pd.to_datetime(out["fim"]) <= pd.to_datetime(dfim))]
-    return out
 
+    # aplica período somente se habilitado e datas válidas
+    if usar_periodo and isinstance(di, date) and isinstance(dfim, date):
+        out = out[
+            (out["inicio"].notna()) & (pd.to_datetime(out["inicio"]) >= pd.to_datetime(di))
+        ]
+        out = out[
+            (out["fim"].notna()) & (pd.to_datetime(out["fim"]) <= pd.to_datetime(dfim))
+        ]
+
+    return out
 
 def _form_novo_ou_editar(mode: str, usuario: str, registro: dict | None = None) -> dict | None:
     """Formulário de criação/edição. Retorna o payload salvo ou None."""
