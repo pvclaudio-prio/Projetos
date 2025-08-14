@@ -11,7 +11,7 @@ from modules.drive_utils import conectar_drive  # usado nas abas internas
 from modules.crud_utils import carregar_arquivo_excel, salvar_arquivo_excel  # idem
 from modules.projetos_atividades import aba_projetos_atividades
 from modules.cadastro_ideias import aba_cadastro_ideias as cadastro_ideias
-from modules.cadastro_riscos import cadastro_riscos
+from modules.cadastro_riscos import aba_cadastro_riscos as cadastro_riscos
 from modules.agenda import agenda_semanal
 from modules.financeiro_projeto import aba_financeiro_projeto
 from modules.pontos_focais import aba_pontos_focais
