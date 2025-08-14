@@ -22,7 +22,7 @@ except Exception:
     HAS_GDRIVE = False
 
 
-def conectar_drive() -> Optional[GoogleDrive]:
+def conectar_drive():
     """Autentica no Google Drive usando o modelo do usuário (st.secrets["credentials"])."""
     if not HAS_GDRIVE:
         return None
@@ -43,7 +43,17 @@ def conectar_drive() -> Optional[GoogleDrive]:
         )
         if not credentials.access_token or credentials.access_token_expired:
             credentials.refresh(httplib2.Http())
+
         gauth = GoogleAuth()
+        # evita erro Missing required setting client_config
+        gauth.settings["client_config"] = {
+            "client_id": cred_dict.get("client_id"),
+            "client_secret": cred_dict.get("client_secret"),
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "revoke_uri": "https://oauth2.googleapis.com/revoke",
+            "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob", "http://localhost"]
+        }
         gauth.credentials = credentials
         return GoogleDrive(gauth)
     except Exception as e:
