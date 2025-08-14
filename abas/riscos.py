@@ -61,7 +61,7 @@ def aba_riscos(st):
             save_base(df_ris, "riscos")
             st.success("Risco salvo com sucesso.")
 
-    # ------------------------- Lista + filtro -------------------------
+    # ------------------------- Lista -------------------------
     if df_ris.empty:
         st.info("Nenhum risco cadastrado ainda.")
         return
@@ -71,34 +71,41 @@ def aba_riscos(st):
         left_on="projeto_id", right_on="id", how="left"
     ).rename(columns={"nome_projeto": "Projeto"})
 
+    # selecione colunas para exibição
+    cols = [
+        "Projeto","categoria","descricao","severidade","probabilidade",
+        "status_tratativa","responsavel","prazo_tratativa","impacto_financeiro"
+    ]
+    exist_cols = [c for c in cols if c in df_list.columns]
+    df_view = df_list[exist_cols].copy()
+
+    # ordenar ANTES de renomear (evita KeyError)
+    sort_keys = [c for c in ["Projeto","severidade","probabilidade"] if c in df_view.columns]
+    if sort_keys:
+        # severidade/probabilidade desc (alto primeiro) e projeto asc
+        ascending = [True] + [False]*(len(sort_keys)-1) if sort_keys[0] == "Projeto" else [False]*len(sort_keys)
+        df_view = df_view.sort_values(sort_keys, ascending=ascending)
+
     st.write("### Riscos mapeados")
     st.dataframe(
-        df_list[[
-            "Projeto","categoria","descricao","severidade","probabilidade",
-            "status_tratativa","responsavel","prazo_tratativa","impacto_financeiro"
-        ]].rename(columns={
+        df_view.rename(columns={
             "categoria":"Categoria","descricao":"Descrição","severidade":"Severidade",
             "probabilidade":"Probabilidade","status_tratativa":"Status",
             "responsavel":"Responsável","prazo_tratativa":"Prazo tratativa",
             "impacto_financeiro":"Impacto (BRL)"
-        }).sort_values(["Projeto","severidade","probabilidade"], ascending=[True, False, False]),
+        }),
         use_container_width=True
     )
 
     # ------------------------- Edição / Exclusão -------------------------
     st.write("### Editar / Excluir risco")
-    # Seleciona projeto para facilitar navegação
-    proj_sel = st.selectbox(
-        "Projeto", ["(Todos)"] + df_proj["nome_projeto"].tolist(),
-        key="rk_proj_filtro"
-    )
+    proj_sel = st.selectbox("Projeto", ["(Todos)"] + df_proj["nome_projeto"].tolist(), key="rk_proj_filtro")
     base_ed = df_list if proj_sel == "(Todos)" else df_list[df_list["Projeto"] == proj_sel]
 
     if base_ed.empty:
         st.caption("Nenhum risco para editar nesse filtro.")
         return
 
-    # Mapa de IDs visíveis
     id_col = "id_x" if "id_x" in base_ed.columns else "id"
     idx = st.selectbox(
         "Escolha o risco",
@@ -110,13 +117,10 @@ def aba_riscos(st):
         return
 
     rk_id = base_ed.iloc[idx][id_col]
-    # Carrega linha atual para edição
     df_ris = load_base("riscos").copy()
     row = df_ris[df_ris["id"] == rk_id].iloc[0]
 
-    # Form de edição
     with st.form("form_edit_risco"):
-        # Projeto (permite mover risco para outro projeto)
         proj_idx_e = df_proj.index[df_proj["id"] == row["projeto_id"]].tolist()
         proj_idx_e = proj_idx_e[0] if proj_idx_e else 0
         proj_e = st.selectbox(
