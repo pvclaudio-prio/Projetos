@@ -5,6 +5,12 @@ from datetime import date, datetime
 import uuid
 
 from modules.crud_utils import carregar_arquivo_excel, salvar_arquivo_excel
+from modules.core_context import (
+    seletor_contexto,
+    validar_projeto_atividade_valido,
+    load_df_atividades,
+    list_projetos,
+)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Caminhos das bases
@@ -38,6 +44,9 @@ PERIODICIDADES = ["Único", "Mensal", "Trimestral", "Anual"]
 CENARIOS = ["Base", "Alto", "Baixo"]
 CAPEX_OPEX = ["CAPEX", "OPEX"]
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Loads & Saves
+
 @st.cache_data(show_spinner=False)
 def _load_params() -> pd.DataFrame:
     try:
@@ -46,10 +55,11 @@ def _load_params() -> pd.DataFrame:
             df = pd.DataFrame(columns=COLS_PARAM)
     except Exception:
         df = pd.DataFrame(columns=COLS_PARAM)
+
     for c in COLS_PARAM:
         if c not in df.columns:
             df[c] = None
-    # normalizações
+
     if not df.empty:
         df["taxa_desconto_anual"] = pd.to_numeric(df["taxa_desconto_anual"], errors="coerce").fillna(0.0)
         df["horizonte_meses"] = pd.to_numeric(df["horizonte_meses"], errors="coerce").fillna(60).astype(int)
@@ -67,9 +77,11 @@ def _load_lanc() -> pd.DataFrame:
             df = pd.DataFrame(columns=COLS_LANC)
     except Exception:
         df = pd.DataFrame(columns=COLS_LANC)
+
     for c in COLS_LANC:
         if c not in df.columns:
             df[c] = None
+
     if not df.empty:
         df["valor"] = pd.to_numeric(df["valor"], errors="coerce").fillna(0.0)
         df["parcelas"] = pd.to_numeric(df["parcelas"], errors="coerce").fillna(1).astype(int)
@@ -103,7 +115,6 @@ def _expandir_fluxo(df_lanc: pd.DataFrame, projeto: str, params: dict) -> pd.Dat
     if not projeto:
         return pd.DataFrame(columns=["competencia","projeto","valor","tipo","categoria","descricao"])
 
-    taxa_desc_aa = float(params.get("taxa_desconto_anual", 0.0))
     inflacao_aa = float(params.get("indice_inflacao_anual", 0.0))
     horizonte = int(params.get("horizonte_meses", 60))
     data_base = params.get("data_base") or date.today()
@@ -114,7 +125,7 @@ def _expandir_fluxo(df_lanc: pd.DataFrame, projeto: str, params: dict) -> pd.Dat
     if "cenario" in dfp.columns and params.get("cenario"):
         dfp = dfp[dfp["cenario"].eq(params["cenario"]) | dfp["cenario"].eq("")]
 
-    # Corrigir sinal: Receita positiva, Despesa negativa
+    # Receita positiva, Despesa negativa
     dfp["valor"] = np.where(dfp["tipo"].str.lower()=="despesa", -dfp["valor"], dfp["valor"])
 
     linhas = []
@@ -126,7 +137,6 @@ def _expandir_fluxo(df_lanc: pd.DataFrame, projeto: str, params: dict) -> pd.Dat
         parcelas = int(row.get("parcelas", 1))
         valor = float(row.get("valor", 0.0))
 
-        # Série temporal
         if periodicidade == "Único":
             datas = [start]
         elif periodicidade == "Mensal":
@@ -151,7 +161,7 @@ def _expandir_fluxo(df_lanc: pd.DataFrame, projeto: str, params: dict) -> pd.Dat
             })
     fluxo = pd.DataFrame(linhas)
     if fluxo.empty:
-        return pd.DataFrame(columns=["competencia","projeto","valor","tipo","categoria","descricao"]) 
+        return pd.DataFrame(columns=["competencia","projeto","valor","tipo","categoria","descricao"])
 
     # Agregar por mês
     fluxo = fluxo.groupby(["competencia","projeto"], as_index=False)["valor"].sum()
@@ -189,19 +199,19 @@ def _payback(fluxo: pd.DataFrame, descontado: bool, taxa_anual: float, data_base
 def _tir(fluxo: pd.DataFrame, data_base: date) -> float | None:
     if fluxo.empty:
         return None
-    # Ordenar e criar série de valores por mês a partir de data_base
     fluxo = fluxo.sort_values("competencia").copy()
     meses = ((pd.to_datetime(fluxo["competencia"]) - pd.to_datetime(data_base)).dt.days // 30).astype(int)
     max_m = int(meses.max()) if len(meses) else 0
     serie = np.zeros(max_m + 1)
-    for m, v in zip(meses, fluxo["valor" ]):
+    for m, v in zip(meses, fluxo["valor"]):
         serie[m] += v
     try:
-        irr = np.irr(serie)  # numpy>=1.20 moveu p/ numpy_financial; funciona em muitos ambientes
+        # Nota: np.irr foi movido para numpy_financial em alguns ambientes;
+        # se necessário, troque para numpy_financial.irr
+        irr = np.irr(serie)
         if irr is None:
             return None
-        # converter para anual aproximado
-        return float((1 + irr) ** 12 - 1)
+        return float((1 + irr) ** 12 - 1)  # anualiza
     except Exception:
         return None
 
@@ -211,58 +221,85 @@ def _tir(fluxo: pd.DataFrame, data_base: date) -> float | None:
 def aba_financeiro_projeto(usuario_logado: str, nome_usuario: str):
     st.title("💵 Financeiro do Projeto — Fluxo, VPL, Payback e TIR")
 
+    # 🔗 Vincula ao cadastro oficial (projeto obrigatório; atividade opcional aqui)
+    seletor_contexto(show_atividade=False, obrigatorio=True)
+    projeto_ctx = st.session_state["ctx_projeto"]
+
     tab1, tab2, tab3 = st.tabs(["⚙️ Parâmetros", "🧾 Lançamentos", "📈 Análises"])
 
     # ── Parâmetros
     with tab1:
         dfp = _load_params()
         st.subheader("Parâmetros por Projeto")
-        st.dataframe(dfp, use_container_width=True, hide_index=True)
+        if not dfp.empty:
+            st.dataframe(dfp, use_container_width=True, hide_index=True)
+        else:
+            st.caption("Nenhum parâmetro cadastrado ainda.")
+
         with st.expander("Adicionar/Editar Parâmetros"):
-            projetos_existentes = sorted(_load_lanc()["projeto"].dropna().unique().tolist())
-            projeto = st.text_input("Projeto", placeholder="Ex.: Integração Teradata", help="Use exatamente o mesmo nome usado nas atividades.", value=(projetos_existentes[0] if projetos_existentes else ""))
+            projetos_existentes = list_projetos(load_df_atividades())
+            if not projetos_existentes:
+                st.warning("Cadastre projetos em 🗂️ Projetos e Atividades antes de definir parâmetros financeiros.")
+                st.stop()
+
+            # Projeto vem do contexto, mas permitimos trocar entre os válidos
+            idx_proj = projetos_existentes.index(projeto_ctx) if projeto_ctx in projetos_existentes else 0
+            projeto = st.selectbox("Projeto", options=projetos_existentes, index=idx_proj)
+
             col1, col2, col3 = st.columns(3)
             taxa = col1.number_input("Taxa de desconto anual (WACC)", min_value=0.0, max_value=1.0, value=0.15, step=0.01, format="%.2f")
             horizonte = col2.number_input("Horizonte (meses)", min_value=12, max_value=240, value=60, step=1)
             data_base = col3.date_input("Data base", value=date(date.today().year, date.today().month, 1))
+
             col4, col5, col6 = st.columns(3)
             inflacao = col4.number_input("Inflação anual (opcional)", min_value=0.0, max_value=1.0, value=0.0, step=0.01, format="%.2f")
             moeda = col5.text_input("Moeda", value="BRL")
             cenario = col6.selectbox("Cenário", CENARIOS, index=0)
+
             obs = st.text_area("Observações", placeholder="Premissas, fontes, etc.")
+
             if st.button("Salvar parâmetros", type="primary"):
-                if not projeto.strip():
-                    st.error("Informe o nome do projeto.")
+                ok, msg = validar_projeto_atividade_valido(projeto)
+                if not ok:
+                    st.error(msg)
+                    st.stop()
+
+                # upsert
+                if (dfp["projeto"] == projeto).any():
+                    dfp.loc[dfp["projeto"] == projeto, [
+                        "taxa_desconto_anual","horizonte_meses","data_base","indice_inflacao_anual","moeda","cenario","observacoes","atualizado_em"
+                    ]] = [taxa, int(horizonte), data_base, inflacao, moeda, cenario, obs, datetime.now().isoformat(timespec="seconds")]
                 else:
-                    # upsert
-                    if (dfp["projeto"] == projeto).any():
-                        dfp.loc[dfp["projeto"] == projeto, [
-                            "taxa_desconto_anual","horizonte_meses","data_base","indice_inflacao_anual","moeda","cenario","observacoes","atualizado_em"
-                        ]] = [taxa, int(horizonte), data_base, inflacao, moeda, cenario, obs, datetime.now().isoformat(timespec="seconds")]
-                    else:
-                        dfp = pd.concat([dfp, pd.DataFrame([{
-                            "projeto": projeto, "taxa_desconto_anual": taxa, "horizonte_meses": int(horizonte),
-                            "data_base": data_base, "indice_inflacao_anual": inflacao, "moeda": moeda, "cenario": cenario,
-                            "observacoes": obs, "atualizado_em": datetime.now().isoformat(timespec="seconds")
-                        }])], ignore_index=True)
-                    _save_params(dfp)
-                    st.success("Parâmetros salvos.")
-                    st.rerun()
+                    dfp = pd.concat([dfp, pd.DataFrame([{
+                        "projeto": projeto, "taxa_desconto_anual": taxa, "horizonte_meses": int(horizonte),
+                        "data_base": data_base, "indice_inflacao_anual": inflacao, "moeda": moeda, "cenario": cenario,
+                        "observacoes": obs, "atualizado_em": datetime.now().isoformat(timespec="seconds")
+                    }])], ignore_index=True)
+
+                _save_params(dfp)
+                st.success("Parâmetros salvos.")
+                st.rerun()
 
     # ── Lançamentos
     with tab2:
         dfl = _load_lanc()
-        st.subheader("Lançamentos (Receitas & Despesas)")
-        st.dataframe(dfl[[
-            "id","projeto","tipo","categoria","descricao","valor","data_inicio","periodicidade","parcelas","eh_estimativa","confianca","cenario","capex_opex","fornecedor","centro_custo"
-        ]].sort_values(["projeto","data_inicio"]).reset_index(drop=True), use_container_width=True, hide_index=True)
+        st.subheader(f"Lançamentos (Receitas & Despesas) — Projeto: **{projeto_ctx}**")
+        if not dfl.empty:
+            st.dataframe(
+                dfl[dfl["projeto"] == projeto_ctx][[
+                    "id","projeto","tipo","categoria","descricao","valor","data_inicio","periodicidade","parcelas",
+                    "eh_estimativa","confianca","cenario","capex_opex","fornecedor","centro_custo"
+                ]].sort_values(["data_inicio"]).reset_index(drop=True),
+                use_container_width=True, hide_index=True
+            )
+        else:
+            st.caption("Nenhum lançamento cadastrado ainda.")
 
         st.markdown("---")
         st.subheader("➕ Novo lançamento")
         with st.form("form_lanc"):
-            col0, col00 = st.columns([2,1])
-            projeto = col0.text_input("Projeto", placeholder="Use o mesmo nome do projeto")
-            tipo = col00.selectbox("Tipo", TIPOS)
+            # Projeto travado no contexto
+            st.caption(f"Projeto: **{projeto_ctx}** (definido no seletor do topo)")
 
             col1, col2, col3 = st.columns([2,1,1])
             categoria = col1.text_input("Categoria", placeholder="Ex.: Licenças, Serviços, Receita de venda")
@@ -275,68 +312,86 @@ def aba_financeiro_projeto(usuario_logado: str, nome_usuario: str):
             parcelas = col6.number_input("Parcelas/Qtd", min_value=1, max_value=240, value=12)
 
             col7, col8, col9 = st.columns(3)
-            eh_estimativa = col7.checkbox("É estimativa?", value=True)
-            confianca = col8.slider("Confiança da estimativa", 0.0, 1.0, 0.7, 0.05)
-            cenario = col9.selectbox("Cenário", CENARIOS, index=0)
+            tipo = col7.selectbox("Tipo", TIPOS)
+            eh_estimativa = col8.checkbox("É estimativa?", value=True)
+            confianca = col9.slider("Confiança da estimativa", 0.0, 1.0, 0.7, 0.05)
 
-            descricao = st.text_area("Descrição/Observações", placeholder="Detalhes do lançamento")
-            fornecedor = st.text_input("Fornecedor (opcional)")
-            cc = st.text_input("Centro de Custo (opcional)")
+            col10, col11 = st.columns(2)
+            cenario = col10.selectbox("Cenário", CENARIOS, index=0)
+            fornecedor = col11.text_input("Fornecedor (opcional)")
+
+            col12, col13 = st.columns(2)
+            cc = col12.text_input("Centro de Custo (opcional)")
+            descricao = col13.text_input("Descrição (opcional)", placeholder="Detalhes do lançamento")
 
             submitted = st.form_submit_button("Salvar lançamento")
 
         if submitted:
-            if not projeto.strip():
-                st.error("Informe o projeto.")
-            elif valor <= 0:
+            projeto = projeto_ctx  # sempre o contexto atual
+            ok, msg = validar_projeto_atividade_valido(projeto)
+            if not ok:
+                st.error(msg)
+                st.stop()
+            if valor <= 0:
                 st.error("Informe um valor positivo.")
-            else:
-                novo = {
-                    "id": str(uuid.uuid4()), "projeto": projeto.strip(), "tipo": tipo, "categoria": categoria.strip(),
-                    "descricao": descricao.strip(), "valor": float(valor), "data_inicio": data_inicio,
-                    "periodicidade": periodicidade, "parcelas": int(parcelas), "eh_estimativa": bool(eh_estimativa),
-                    "confianca": float(confianca), "cenario": cenario, "capex_opex": capex_opex, "fornecedor": fornecedor.strip(),
-                    "centro_custo": cc.strip(), "criado_em": datetime.now().isoformat(timespec="seconds"),
-                    "atualizado_em": datetime.now().isoformat(timespec="seconds")
-                }
-                dfl = pd.concat([dfl, pd.DataFrame([novo])], ignore_index=True)
-                _save_lanc(dfl)
-                st.success("Lançamento salvo.")
-                st.rerun()
+                st.stop()
+
+            novo = {
+                "id": str(uuid.uuid4()), "projeto": projeto, "tipo": tipo, "categoria": categoria.strip(),
+                "descricao": descricao.strip(), "valor": float(valor), "data_inicio": data_inicio,
+                "periodicidade": periodicidade, "parcelas": int(parcelas), "eh_estimativa": bool(eh_estimativa),
+                "confianca": float(confianca), "cenario": cenario, "capex_opex": capex_opex, "fornecedor": fornecedor.strip(),
+                "centro_custo": cc.strip(), "criado_em": datetime.now().isoformat(timespec="seconds"),
+                "atualizado_em": datetime.now().isoformat(timespec="seconds")
+            }
+            dfl = pd.concat([dfl, pd.DataFrame([novo])], ignore_index=True)
+            _save_lanc(dfl)
+            st.success("Lançamento salvo.")
+            st.rerun()
 
         with st.expander("✏️ Editar / 🗑️ Excluir"):
-            if not dfl.empty:
-                ids = st.multiselect("Selecione IDs", dfl["id"].tolist())
+            dfl = _load_lanc()
+            dfl_proj = dfl[dfl["projeto"] == projeto_ctx].copy()
+            if dfl_proj.empty:
+                st.caption("Nenhum lançamento deste projeto para editar/excluir.")
+            else:
+                ids = st.multiselect("Selecione IDs", dfl_proj["id"].tolist())
                 colE1, colE2 = st.columns(2)
                 if colE1.button("Excluir selecionados", disabled=not ids):
                     dfl = dfl[~dfl["id"].isin(ids)].copy()
                     _save_lanc(dfl)
                     st.success("Excluídos.")
                     st.rerun()
-                if colE2.button("Limpar tudo (cuidado)"):
-                    _save_lanc(pd.DataFrame(columns=COLS_LANC))
-                    st.success("Base de lançamentos limpa.")
+                if colE2.button("Limpar tudo do projeto (cuidado)"):
+                    dfl = dfl[dfl["projeto"] != projeto_ctx].copy()
+                    _save_lanc(dfl)
+                    st.success("Base de lançamentos do projeto limpa.")
                     st.rerun()
 
     # ── Análises
     with tab3:
         dfp = _load_params()
         dfl = _load_lanc()
-        projetos = sorted(list(set(dfl["projeto"].dropna().tolist()) | set(dfp["projeto"].dropna().tolist())))
-        if not projetos:
-            st.info("Cadastre parâmetros e lançamentos primeiro.")
-            return
-        projeto_sel = st.selectbox("Projeto", projetos)
-        # obter params
-        linha = dfp[dfp["projeto"] == projeto_sel].iloc[0].to_dict() if (dfp["projeto"] == projeto_sel).any() else {
-            "taxa_desconto_anual": 0.15, "horizonte_meses": 60, "data_base": date(date.today().year, date.today().month, 1), "indice_inflacao_anual": 0.0, "cenario": "Base", "moeda": "BRL"
-        }
-        fluxo = _expandir_fluxo(dfl, projeto_sel, linha)
+
+        # parâmetros do projeto (se não houver, usamos defaults)
+        if (not dfp.empty) and (dfp["projeto"] == projeto_ctx).any():
+            linha = dfp[dfp["projeto"] == projeto_ctx].iloc[0].to_dict()
+        else:
+            linha = {
+                "taxa_desconto_anual": 0.15,
+                "horizonte_meses": 60,
+                "data_base": date(date.today().year, date.today().month, 1),
+                "indice_inflacao_anual": 0.0,
+                "cenario": "Base",
+                "moeda": "BRL",
+            }
+
+        fluxo = _expandir_fluxo(dfl, projeto_ctx, linha)
         if fluxo.empty:
-            st.warning("Sem fluxo gerado para o projeto selecionado.")
+            st.warning("Sem fluxo gerado para o projeto selecionado. Cadastre lançamentos na aba anterior.")
             return
 
-        st.subheader("Fluxo de Caixa (Mensal)")
+        st.subheader(f"Fluxo de Caixa (Mensal) — Projeto: **{projeto_ctx}**")
         fluxo_show = fluxo.copy()
         fluxo_show["competencia"] = pd.to_datetime(fluxo_show["competencia"]).dt.strftime("%Y-%m")
         st.dataframe(fluxo_show, use_container_width=True, hide_index=True)
@@ -358,10 +413,13 @@ def aba_financeiro_projeto(usuario_logado: str, nome_usuario: str):
             mult_receita = colS2.number_input("Multiplicador de Receitas", value=1.0, step=0.1)
             mult_despesa = colS3.number_input("Multiplicador de Despesas", value=1.0, step=0.1)
             if st.button("Aplicar sensibilidade"):
-                fluxo_sens = _expandir_fluxo(dfl.copy().assign(
-                    valor=lambda df: np.where(df["tipo"].eq("Despesa"), df["valor"]*mult_despesa, df["valor"]*mult_receita)
-                ), projeto_sel, linha)
+                dfl2 = _load_lanc()
+                dfl2 = dfl2.copy()
+                # aplica multiplicadores por tipo
+                dfl2.loc[(dfl2["projeto"] == projeto_ctx) & (dfl2["tipo"] == "Receita"), "valor"] *= mult_receita
+                dfl2.loc[(dfl2["projeto"] == projeto_ctx) & (dfl2["tipo"] == "Despesa"), "valor"] *= mult_despesa
+                fluxo_sens = _expandir_fluxo(dfl2, projeto_ctx, linha)
                 vpl_sens = _npv(fluxo_sens, float(linha["taxa_desconto_anual"]) + (delta_taxa/100.0), linha["data_base"])
                 st.info(f"VPL sensível: {vpl_sens:,.2f} {linha['moeda']}")
 
-        st.caption("Notas: VPL usa taxa efetiva mensal derivada da taxa anual informada; payback descontado considera a mesma taxa. Valores de despesa entram negativos.")
+        st.caption("Notas: VPL usa taxa efetiva mensal derivada da taxa anual informada; payback descontado considera a mesma taxa. Valores de despesa entram negativos. Projeto e lançamentos são vinculados ao cadastro oficial.")
