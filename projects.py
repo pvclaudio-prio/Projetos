@@ -13,6 +13,8 @@ from modules.projetos_atividades import aba_projetos_atividades
 from modules.cadastro_ideias import cadastro_ideias
 from modules.cadastro_riscos import cadastro_riscos
 from modules.agenda import agenda_semanal
+from modules.financeiro_projeto import aba_financeiro_projeto
+from modules.pontos_focais import aba_pontos_focais
 
 # Caminho do logo (ajuste se necessário)
 LOGO_PATH = "PRIO_SEM_POLVO_PRIO_PANTONE_LOGOTIPO_Azul.png"
@@ -102,6 +104,8 @@ menu = st.sidebar.radio(
         "💰 Ganhos",
         "📚 Lições Aprendidas",
         "🔎 Visualização Unificada",
+        "💵 Financeiro do Projeto",
+        "👥 Pontos Focais",
         "🤖 IA Consultor",
     ],
     index=0,
@@ -144,6 +148,18 @@ elif menu == "📚 Lições Aprendidas":
 
 elif menu == "🔎 Visualização Unificada":
     st.title("🔎 Visualização Unificada (Em construção)")
+
+elif menu == "💵 Financeiro do Projeto":
+    try:
+        aba_financeiro_projeto(usuario_logado, nome_usuario)
+    except Exception as e:
+        st.error(f"Erro ao abrir a aba 'Financeiro do Projeto': {e}")
+
+elif menu == "👥 Pontos Focais":
+    try:
+        aba_pontos_focais(usuario_logado, nome_usuario)
+    except Exception as e:
+        st.error(f"Erro ao abrir a aba 'Pontos Focais': {e}")
 
 elif menu == "🤖 IA Consultor":
     st.title("🤖 IA Consultor de Projetos (Em construção)")
