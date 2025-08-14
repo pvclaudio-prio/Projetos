@@ -113,7 +113,10 @@ menu = st.sidebar.radio(
 
 # 📦 Roteamento de páginas
 if menu == "🏠 Dashboard":
-    st.title("📊 Dashboard de Projetos (Em construção)")
+    try:
+        dashboard_principal()
+    except Exception as e:
+        st.error(f"Erro ao abrir a aba 'Dashboard': {e}")
 
 elif menu == "🗂️ Projetos e Atividades":
     # Envolvemos em try/except para evitar que um erro interno derrube o app inteiro
