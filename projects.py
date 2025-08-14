@@ -18,6 +18,8 @@ from abas.financeiro import aba_financeiro
 from abas.pontos_focais import aba_pontos_focais
 from abas.riscos import aba_riscos
 from abas.visao_unificada import aba_visao_unificada
+from common import ensure_bases
+ensure_bases()
 
 st.set_page_config(page_title=APP_NAME, page_icon="📁", layout="wide")
 
