@@ -13,6 +13,46 @@ def _fmt_date(d):
     d = _parse_date(d)
     return d.strftime("%Y-%m-%d") if d else None
 
+# ---- Normalizações para dados antigos/variantes ----
+_SEV_MAP = {
+    "baixo": "Baixo", "baixa": "Baixo",
+    "medio": "Médio", "médio": "Médio", "m\u00e9dio": "Médio",
+    "alto": "Alto", "alta": "Alto",
+    "critico": "Crítico", "crítico": "Crítico", "cr\u00edtico": "Crítico"
+}
+_PROB_MAP = {
+    # mapeia sinônimos para os valores do common.RISCO_PROBABILIDADE
+    "rara": "Rara",
+    "improvavel": "Improvável", "improvável": "Improvável",
+    "possivel": "Possível", "possível": "Possível",
+    "provavel": "Provável", "provável": "Provável",
+    "quase certa": "Quase certa",
+    # variantes usadas em versões anteriores:
+    "remota": "Rara",
+}
+
+def _norm_sev(v: object) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return RISCO_SEVERIDADE[1]  # "Médio"
+    s = str(v).strip().lower()
+    return _SEV_MAP.get(s, v if v in RISCO_SEVERIDADE else RISCO_SEVERIDADE[1])
+
+def _norm_prob(v: object) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return RISCO_PROBABILIDADE[2]  # "Possível"
+    s = str(v).strip().lower()
+    mapped = _PROB_MAP.get(s)
+    if mapped and mapped in RISCO_PROBABILIDADE:
+        return mapped
+    # se já está correto, mantém; senão padrão
+    return v if v in RISCO_PROBABILIDADE else RISCO_PROBABILIDADE[2]
+
+def _safe_index(options: list[str], value: object, default_idx: int = 0) -> int:
+    try:
+        return options.index(value)  # type: ignore[arg-type]
+    except Exception:
+        return default_idx
+
 def aba_riscos(st):
     st.subheader("⚠️ Riscos do Projeto")
     st.caption("Cadastre, edite e exclua riscos. Campos compatíveis com Agenda e Visão Unificada.")
@@ -34,9 +74,12 @@ def aba_riscos(st):
         )
         categoria = st.text_input("Categoria do risco", key="rk_cat_novo")
         descricao = st.text_area("Descrição do risco", key="rk_desc_novo")
-        severidade = st.selectbox("Severidade", RISCO_SEVERIDADE, index=1, key="rk_sev_novo")
-        probabilidade = st.selectbox("Probabilidade", RISCO_PROBABILIDADE, index=2, key="rk_prob_novo")
-        status_tratativa = st.selectbox("Status da tratativa", RISCO_STATUS, index=0, key="rk_stat_novo")
+        severidade = st.selectbox("Severidade", RISCO_SEVERIDADE,
+                                  index=_safe_index(RISCO_SEVERIDADE, "Médio", 1), key="rk_sev_novo")
+        probabilidade = st.selectbox("Probabilidade", RISCO_PROBABILIDADE,
+                                     index=_safe_index(RISCO_PROBABILIDADE, "Possível", 2), key="rk_prob_novo")
+        status_tratativa = st.selectbox("Status da tratativa", RISCO_STATUS,
+                                        index=_safe_index(RISCO_STATUS, "Aberto", 0), key="rk_stat_novo")
         responsavel = st.text_input("Responsável", key="rk_resp_novo")
         prazo_tratativa = st.date_input("Prazo da tratativa", value=None, key="rk_prazo_novo")
         impacto_financeiro = st.number_input("Impacto financeiro estimado (BRL)", min_value=0.0, step=100.0, key="rk_imp_novo")
@@ -66,12 +109,15 @@ def aba_riscos(st):
         st.info("Nenhum risco cadastrado ainda.")
         return
 
+    # normaliza possíveis valores antigos
+    df_ris["severidade"] = df_ris["severidade"].apply(_norm_sev) if "severidade" in df_ris.columns else "Médio"
+    df_ris["probabilidade"] = df_ris["probabilidade"].apply(_norm_prob) if "probabilidade" in df_ris.columns else "Possível"
+
     df_list = df_ris.merge(
         df_proj[["id", "nome_projeto"]],
         left_on="projeto_id", right_on="id", how="left"
     ).rename(columns={"nome_projeto": "Projeto"})
 
-    # selecione colunas para exibição
     cols = [
         "Projeto","categoria","descricao","severidade","probabilidade",
         "status_tratativa","responsavel","prazo_tratativa","impacto_financeiro"
@@ -79,10 +125,8 @@ def aba_riscos(st):
     exist_cols = [c for c in cols if c in df_list.columns]
     df_view = df_list[exist_cols].copy()
 
-    # ordenar ANTES de renomear (evita KeyError)
     sort_keys = [c for c in ["Projeto","severidade","probabilidade"] if c in df_view.columns]
     if sort_keys:
-        # severidade/probabilidade desc (alto primeiro) e projeto asc
         ascending = [True] + [False]*(len(sort_keys)-1) if sort_keys[0] == "Projeto" else [False]*len(sort_keys)
         df_view = df_view.sort_values(sort_keys, ascending=ascending)
 
@@ -121,6 +165,11 @@ def aba_riscos(st):
     row = df_ris[df_ris["id"] == rk_id].iloc[0]
 
     with st.form("form_edit_risco"):
+        # normaliza antes de pré-selecionar
+        row_sev = _norm_sev(row.get("severidade"))
+        row_prob = _norm_prob(row.get("probabilidade"))
+        row_stat = row.get("status_tratativa") or RISCO_STATUS[0]
+
         proj_idx_e = df_proj.index[df_proj["id"] == row["projeto_id"]].tolist()
         proj_idx_e = proj_idx_e[0] if proj_idx_e else 0
         proj_e = st.selectbox(
@@ -131,14 +180,11 @@ def aba_riscos(st):
         cat_e = st.text_input("Categoria", value=row.get("categoria",""), key="rk_cat_edit")
         desc_e = st.text_area("Descrição", value=row.get("descricao",""), key="rk_desc_edit")
         sev_e  = st.selectbox("Severidade", RISCO_SEVERIDADE,
-                              index=max(0, RISCO_SEVERIDADE.index(row.get("severidade", RISCO_SEVERIDADE[1]))),
-                              key="rk_sev_edit")
+                              index=_safe_index(RISCO_SEVERIDADE, row_sev, 1), key="rk_sev_edit")
         prob_e = st.selectbox("Probabilidade", RISCO_PROBABILIDADE,
-                              index=max(0, RISCO_PROBABILIDADE.index(row.get("probabilidade", RISCO_PROBABILIDADE[2]))),
-                              key="rk_prob_edit")
+                              index=_safe_index(RISCO_PROBABILIDADE, row_prob, 2), key="rk_prob_edit")
         stat_e = st.selectbox("Status da tratativa", RISCO_STATUS,
-                              index=max(0, RISCO_STATUS.index(row.get("status_tratativa", RISCO_STATUS[0]))),
-                              key="rk_stat_edit")
+                              index=_safe_index(RISCO_STATUS, row_stat, 0), key="rk_stat_edit")
         resp_e = st.text_input("Responsável", value=row.get("responsavel",""), key="rk_resp_edit")
         prazo_e = st.date_input("Prazo da tratativa", value=_parse_date(row.get("prazo_tratativa")), key="rk_prazo_edit")
         imp_e = st.number_input("Impacto financeiro (BRL)", min_value=0.0, step=100.0,
@@ -146,7 +192,7 @@ def aba_riscos(st):
 
         c1, c2 = st.columns(2)
         salvar = c1.form_submit_button("Salvar alterações", type="primary")
-        excluir = c2.form_submit_button("Excluir risco", type="secondary")
+        excluir = c2.form_submit_button("Excluir risco")
 
     if salvar:
         df_ris.loc[df_ris["id"] == rk_id, [
