@@ -41,6 +41,15 @@ def aba_pontos_focais(usuario_logado: str, nome_usuario: str):
 
     df = _load_contatos()
 
+    # Filtro automático vindo da seleção da aba Projetos e Atividades
+    projeto_filtro = st.session_state.get("projeto_selecionado")
+    if projeto_filtro:
+        st.info(f"Filtrando contatos para o projeto: **{projeto_filtro}**")
+        df = df[df["projeto"] == projeto_filtro].copy()
+        if st.button("Limpar filtro de projeto"):
+            st.session_state.pop("projeto_selecionado", None)
+            st.rerun()
+
     st.subheader("Contatos Cadastrados")
     st.dataframe(df[["projeto","empresa","nome","cargo","email","telefone","responsavel_por"]].sort_values(["projeto","empresa","nome"]).reset_index(drop=True), use_container_width=True, hide_index=True)
 
