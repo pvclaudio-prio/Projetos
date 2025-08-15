@@ -5,20 +5,20 @@ from datetime import datetime, date
 from typing import Optional, Dict
 import pandas as pd
 
-# ============================
+# =========================================================
 # Configurações & Caminhos
-# ============================
+# =========================================================
 APP_NAME = "Gestão de Projetos"
 BASE_DIR = os.environ.get("APP_DATA_DIR", "./data_excel")
 
-# Caminhos em EXCEL (fallback local)
+# Fallback local (Excel)
 XLSX_PROJETOS   = os.path.join(BASE_DIR, "projetos.xlsx")
 XLSX_ATIVIDADES = os.path.join(BASE_DIR, "atividades.xlsx")
 XLSX_FINANCEIRO = os.path.join(BASE_DIR, "financeiro_projeto.xlsx")
 XLSX_PONTOS     = os.path.join(BASE_DIR, "pontos_focais.xlsx")
 XLSX_RISCOS     = os.path.join(BASE_DIR, "riscos.xlsx")
 
-# (Compat) caminhos CSV legados — apenas para leitura caso existam
+# Compat: CSV legado (apenas leitura se existir)
 CSV_PROJETOS   = os.path.join(BASE_DIR, "projetos.csv")
 CSV_ATIVIDADES = os.path.join(BASE_DIR, "atividades.csv")
 CSV_FINANCEIRO = os.path.join(BASE_DIR, "financeiro_projeto.csv")
@@ -28,41 +28,28 @@ CSV_RISCOS     = os.path.join(BASE_DIR, "riscos.csv")
 STATUS_OPCOES = ["Pendente", "Em andamento", "Bloqueada", "Concluída"]
 RISCO_SEVERIDADE = ["Baixo", "Médio", "Alto", "Crítico"]
 RISCO_PROBABILIDADE = ["Rara", "Improvável", "Possível", "Provável", "Quase certa"]
-RISCO_STATUS = ["Aberto", "Em tratamento", "Mitigado", "Encerrado"]  # mantenha em sincronia com sua aba de Riscos
+RISCO_STATUS = ["Aberto", "Em tratamento", "Mitigado", "Encerrado"]
 
-# ============================
-# Persistência (wrappers externos + Excel local com leitura CSV legado)
-# ============================
-def _xlsx_load(path: str) -> pd.DataFrame:
-    if not os.path.exists(path):
-        return pd.DataFrame()
-    try:
-        return pd.read_excel(path)
-    except Exception:
-        return pd.DataFrame()
+# =========================================================
+# Integração com Streamlit (cache) + wrappers externos
+# =========================================================
+try:
+    import streamlit as st
+except Exception:  # caso rode fora do Streamlit (tests/scripts)
+    class _Dummy:
+        cache_data = None
+        cache_resource = None
+        session_state = {}
+    st = _Dummy()  # type: ignore
 
-def _xlsx_save(df: pd.DataFrame, path: str, sheet_name: str) -> None:
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with pd.ExcelWriter(path, engine="xlsxwriter") as writer:
-        (df if isinstance(df, pd.DataFrame) else pd.DataFrame()).to_excel(writer, index=False, sheet_name=sheet_name[:31])
-
-def _csv_load(path: str, dtypes: Optional[dict] = None) -> pd.DataFrame:
-    if not os.path.exists(path):
-        return pd.DataFrame()
-    try:
-        return pd.read_csv(path, dtype=dtypes)
-    except Exception:
-        return pd.DataFrame()
-
-# Wrappers externos opcionais (Drive/Sheets/Excel em nuvem via app_storage.py)
+# Wrappers externos opcionais (Drive/Sheets/Excel via app_storage.py)
 try:
     from app_storage import load_base as _external_load_base  # type: ignore
     from app_storage import save_base as _external_save_base  # type: ignore
 except Exception:
-    _external_load_base = None
-    _external_save_base = None
+    _external_load_base = None  # type: ignore
+    _external_save_base = None  # type: ignore
 
-# mapas auxiliares
 _XLSX_MAP: Dict[str, str] = {
     "projetos": XLSX_PROJETOS,
     "atividades": XLSX_ATIVIDADES,
@@ -78,52 +65,117 @@ _CSV_MAP: Dict[str, str] = {
     "riscos": CSV_RISCOS,
 }
 
-def load_base(nome: str) -> pd.DataFrame:
-    """Tenta: 1) wrapper externo (Drive), 2) Excel local, 3) CSV legado (somente leitura)."""
-    # 1) externo (Drive/Sheets/Excel em nuvem) — PRIORITÁRIO
-    if _external_load_base:
-        try:
-            df = _external_load_base(nome)
-            if isinstance(df, pd.DataFrame):
+# =========================================================
+# Helpers de IO local
+# =========================================================
+def _xlsx_load(path: str) -> pd.DataFrame:
+    if not os.path.exists(path):
+        return pd.DataFrame()
+    try:
+        return pd.read_excel(path)
+    except Exception:
+        return pd.DataFrame()
+
+def _xlsx_save(df: pd.DataFrame, path: str, sheet_name: str) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with pd.ExcelWriter(path, engine="xlsxwriter") as writer:
+        (df if isinstance(df, pd.DataFrame) else pd.DataFrame())\
+            .to_excel(writer, index=False, sheet_name=sheet_name[:31])
+
+def _csv_load(path: str, dtypes: Optional[dict] = None) -> pd.DataFrame:
+    if not os.path.exists(path):
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path, dtype=dtypes)
+    except Exception:
+        return pd.DataFrame()
+
+# =========================================================
+# Cache inteligente (carregamento rápido com invalidação por base)
+# =========================================================
+def _get_revs():
+    """Contador de revisão por base (para invalidar cache seletivamente)."""
+    if getattr(st, "session_state", None) is not None:
+        st.session_state.setdefault("_data_revs", {})
+        return st.session_state["_data_revs"]
+    # fallback fora de sessão
+    if not hasattr(_get_revs, "_mem"):
+        _get_revs._mem = {}
+    return _get_revs._mem  # type: ignore[attr-defined]
+
+if getattr(st, "cache_data", None):
+    @st.cache_data(show_spinner=False)
+    def _load_base_cached(nome: str, rev: int) -> pd.DataFrame:
+        # 1) wrapper externo (Drive/Sheets/Excel remoto)
+        if _external_load_base:
+            try:
+                df = _external_load_base(nome)  # type: ignore
+                if isinstance(df, pd.DataFrame):
+                    return df
+            except Exception:
+                pass
+        # 2) Excel local
+        path = _XLSX_MAP.get(nome)
+        if path:
+            df = _xlsx_load(path)
+            if not df.empty:
                 return df
-        except Exception:
-            pass
+        # 3) CSV legado (somente leitura para migração)
+        path = _CSV_MAP.get(nome)
+        if path:
+            df = _csv_load(path)
+            if not df.empty:
+                return df
+        return pd.DataFrame()
+else:
+    # Sem cache (fallback)
+    def _load_base_cached(nome: str, rev: int) -> pd.DataFrame:  # noqa: ARG001
+        if _external_load_base:
+            try:
+                df = _external_load_base(nome)  # type: ignore
+                if isinstance(df, pd.DataFrame):
+                    return df
+            except Exception:
+                pass
+        path = _XLSX_MAP.get(nome)
+        if path:
+            df = _xlsx_load(path)
+            if not df.empty:
+                return df
+        path = _CSV_MAP.get(nome)
+        if path:
+            df = _csv_load(path)
+            if not df.empty:
+                return df
+        return pd.DataFrame()
 
-    # 2) EXCEL local
-    xlsx = _XLSX_MAP.get(nome)
-    if xlsx:
-        df = _xlsx_load(xlsx)
-        if not df.empty:
-            return df
-
-    # 3) CSV legado (se existir), útil para migração automática
-    csv = _CSV_MAP.get(nome)
-    if csv:
-        df = _csv_load(csv)
-        if not df.empty:
-            return df
-
-    return pd.DataFrame()
+def load_base(nome: str) -> pd.DataFrame:
+    revs = _get_revs()
+    rev = int(revs.get(nome, 0))
+    return _load_base_cached(nome, rev)
 
 def save_base(df: pd.DataFrame, nome: str) -> None:
-    """Tenta salvar via wrapper externo; se não houver, salva em EXCEL local."""
-    # 1) externo (Drive)
+    # 1) tenta wrapper externo (Drive/Sheets/Excel remoto)
+    used_external = False
     if _external_save_base:
         try:
-            _external_save_base(df, nome)
-            return
+            _external_save_base(df, nome)  # type: ignore
+            used_external = True
         except Exception:
-            pass
+            used_external = False  # falhou; salva local também
 
-    # 2) EXCEL local
-    xlsx = _XLSX_MAP.get(nome)
-    if xlsx:
-        _xlsx_save(df, xlsx, sheet_name=nome)
-        return
+    # 2) sempre mantém cópia local em Excel (útil como backup/migração)
+    path = _XLSX_MAP.get(nome)
+    if path:
+        _xlsx_save(df, path, sheet_name=nome)
 
-# ============================
+    # 3) invalida cache só desta base (força recarregar na próxima leitura)
+    revs = _get_revs()
+    revs[nome] = int(revs.get(nome, 0)) + 1
+
+# =========================================================
 # Utilitários
-# ============================
+# =========================================================
 def _now_iso() -> str:
     return datetime.utcnow().isoformat()
 
@@ -146,9 +198,9 @@ def _sev_to_score(sev: str) -> int:
 def _prob_to_score(prob: str) -> int:
     return {"Rara": 1, "Improvável": 2, "Possível": 3, "Provável": 4, "Quase certa": 5}.get(prob, 0)
 
-# ============================
-# Garantia de Schema
-# ============================
+# =========================================================
+# Garantia de Schema (criação/migração mínima)
+# =========================================================
 def ensure_bases() -> None:
     """Cria/migra as bases mínimas (funciona com Drive via wrapper ou Excel local)."""
 
