@@ -103,75 +103,160 @@ def _get_revs():
         _get_revs._mem = {}
     return _get_revs._mem  # type: ignore[attr-defined]
 
+# ---- Overrides de fonte (priorizar external|local conforme sucesso do save) ----
+def _get_source_overrides():
+    """Mantém overrides por base: 'external' | 'local'."""
+    if getattr(st, "session_state", None) is not None:
+        st.session_state.setdefault("_data_source_override", {})
+        return st.session_state["_data_source_override"]
+    if not hasattr(_get_source_overrides, "_mem"):
+        _get_source_overrides._mem = {}
+    return _get_source_overrides._mem  # type: ignore[attr-defined]
+
+def _set_source_override(nome: str, prefer: Optional[str]):
+    ovs = _get_source_overrides()
+    if prefer is None:
+        ovs.pop(nome, None)
+    else:
+        ovs[nome] = prefer
+
+def _rough_equal(a: pd.DataFrame, b: pd.DataFrame) -> bool:
+    """Comparação leve para validar pós-gravação."""
+    if a.shape != b.shape:
+        return False
+    try:
+        return a.head(50).reset_index(drop=True).fillna("").equals(
+            b.head(50).reset_index(drop=True).fillna("")
+        )
+    except Exception:
+        return False
+
+# =========================================================
+# Loader com prioridade dinâmica (external vs local) + cache opcional
+# =========================================================
+def _load_base_cached_impl(nome: str, rev: int) -> pd.DataFrame:  # noqa: ARG001
+    prefer = _get_source_overrides().get(nome)  # 'external' | 'local' | None
+
+    def _load_external() -> pd.DataFrame:
+        if _external_load_base:
+            try:
+                df = _external_load_base(nome)  # type: ignore
+                if isinstance(df, pd.DataFrame):
+                    return df
+            except Exception:
+                pass
+        return pd.DataFrame()
+
+    def _load_local() -> pd.DataFrame:
+        path = _XLSX_MAP.get(nome)
+        if path:
+            df = _xlsx_load(path)
+            if not df.empty:
+                return df
+        path = _CSV_MAP.get(nome)
+        if path:
+            df = _csv_load(path)
+            if not df.empty:
+                return df
+        return pd.DataFrame()
+
+    # Ordem de prioridade conforme override
+    loaders = [_load_external, _load_local] if prefer != "local" else [_load_local, _load_external]
+
+    for fn in loaders:
+        df = fn()
+        if not df.empty:
+            return df
+    return pd.DataFrame()
+
+# Mantém o comportamento de cache se disponível
 if getattr(st, "cache_data", None):
     @st.cache_data(show_spinner=False)
     def _load_base_cached(nome: str, rev: int) -> pd.DataFrame:
-        # 1) wrapper externo (Drive/Sheets/Excel remoto)
-        if _external_load_base:
-            try:
-                df = _external_load_base(nome)  # type: ignore
-                if isinstance(df, pd.DataFrame):
-                    return df
-            except Exception:
-                pass
-        # 2) Excel local
-        path = _XLSX_MAP.get(nome)
-        if path:
-            df = _xlsx_load(path)
-            if not df.empty:
-                return df
-        # 3) CSV legado (somente leitura para migração)
-        path = _CSV_MAP.get(nome)
-        if path:
-            df = _csv_load(path)
-            if not df.empty:
-                return df
-        return pd.DataFrame()
+        return _load_base_cached_impl(nome, rev)
 else:
-    # Sem cache (fallback)
-    def _load_base_cached(nome: str, rev: int) -> pd.DataFrame:  # noqa: ARG001
-        if _external_load_base:
-            try:
-                df = _external_load_base(nome)  # type: ignore
-                if isinstance(df, pd.DataFrame):
-                    return df
-            except Exception:
-                pass
-        path = _XLSX_MAP.get(nome)
-        if path:
-            df = _xlsx_load(path)
-            if not df.empty:
-                return df
-        path = _CSV_MAP.get(nome)
-        if path:
-            df = _csv_load(path)
-            if not df.empty:
-                return df
-        return pd.DataFrame()
+    def _load_base_cached(nome: str, rev: int) -> pd.DataFrame:
+        return _load_base_cached_impl(nome, rev)
 
 def load_base(nome: str) -> pd.DataFrame:
     revs = _get_revs()
     rev = int(revs.get(nome, 0))
     return _load_base_cached(nome, rev)
 
+def load_base_fresh(nome: str) -> pd.DataFrame:
+    """Força recarregar ignorando cache atual (incrementa rev)."""
+    revs = _get_revs()
+    revs[nome] = int(revs.get(nome, 0)) + 1
+    return _load_base_cached(nome, revs[nome])
+
+# =========================================================
+# Save com validação do backend externo + fallback local explícito
+# =========================================================
 def save_base(df: pd.DataFrame, nome: str) -> None:
-    # 1) tenta wrapper externo (Drive/Sheets/Excel remoto)
-    used_external = False
+    """
+    Salva a base. Estratégia:
+    1) Tenta salvar no backend externo (Drive/Sheets), se existir;
+       - Relê do externo e valida. Se falhar, informa erro.
+    2) Salva SEMPRE uma cópia local em Excel (backup).
+    3) Invalida cache (rev++).
+    4) Define prioridade de leitura:
+       - Se externo OK -> prefer 'external'
+       - Se externo falhou -> prefer 'local' (até próxima gravação bem-sucedida)
+    """
+    external_ok = False
+    external_error: Optional[Exception] = None
+
+    # 1) Tenta salvar no externo (Drive/Sheets/etc.)
     if _external_save_base:
         try:
             _external_save_base(df, nome)  # type: ignore
-            used_external = True
-        except Exception:
-            used_external = False  # falhou; salva local também
+            # valida: reler do externo e comparar de forma leve
+            if _external_load_base:
+                df_check = _external_load_base(nome)  # type: ignore
+                if isinstance(df_check, pd.DataFrame) and not df_check.empty:
+                    if _rough_equal(df, df_check) or len(df_check) == len(df):
+                        external_ok = True
+                    else:
+                        raise RuntimeError(
+                            f"Validação externa falhou para '{nome}': divergência após gravação."
+                        )
+                else:
+                    raise RuntimeError(
+                        f"Validação externa falhou para '{nome}': leitura vazia após gravação."
+                    )
+            else:
+                # Sem loader externo para validar; considera OK se não houve exceção no save
+                external_ok = True
+        except Exception as e:
+            external_ok = False
+            external_error = e
 
-    # 2) sempre mantém cópia local em Excel (útil como backup/migração)
+    # 2) Sempre salva cópia local (backup/migração)
     path = _XLSX_MAP.get(nome)
     if path:
         _xlsx_save(df, path, sheet_name=nome)
 
-    # 3) invalida cache só desta base (força recarregar na próxima leitura)
+    # 3) Invalida cache da base
     revs = _get_revs()
     revs[nome] = int(revs.get(nome, 0)) + 1
+
+    # 4) Define prioridade de leitura conforme sucesso/fracasso externo
+    if external_ok:
+        _set_source_override(nome, "external")
+    else:
+        _set_source_override(nome, "local")
+
+    # 5) Se o externo falhou, informe claramente
+    if external_error is not None:
+        try:
+            st.warning(
+                f"[{APP_NAME}] Falha ao salvar no backend do Drive para a base '{nome}'. "
+                "Usei a cópia local como fallback (prioridade de leitura local até o próximo sucesso)."
+            )
+            st.exception(external_error)
+        except Exception:
+            # Execução fora do Streamlit
+            print(f"[WARN] Falha ao salvar no Drive para '{nome}': {external_error}")
 
 # =========================================================
 # Utilitários
